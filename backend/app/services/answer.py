@@ -79,7 +79,11 @@ def _cited_labels(answer: str, count: int) -> list[str]:
     return [f"E{n}" for n in nums if 1 <= n <= count]
 
 
-def generate_answer(question: str, evidence: list[Evidence]) -> AnswerResult:
+def generate_answer(
+    question: str,
+    evidence: list[Evidence],
+    history: list[dict[str, str]] | None = None,
+) -> AnswerResult:
     provider = get_llm_provider()
     model_name = f"{provider.name}:{provider.model}"
 
@@ -97,8 +101,17 @@ def generate_answer(question: str, evidence: list[Evidence]) -> AnswerResult:
             model_available=True,
         )
 
+    history_block = ""
+    if history:
+        turns = []
+        for h in history:
+            role_label = "User" if h.get("role") == "user" else "Assistant"
+            turns.append(f"{role_label}: {h.get('content', '').strip()}")
+        if turns:
+            history_block = "PRIOR CONVERSATION CONTEXT:\n" + "\n".join(turns) + "\n\n"
+
     user_prompt = (
-        f"QUESTION: {question}\n\n"
+        f"{history_block}CURRENT QUESTION: {question}\n\n"
         f"{_build_evidence_block(evidence)}\n\n"
         "Answer the question grounded in the evidence above, citing labels like "
         "[E1]. If the evidence does not support an answer, say so."

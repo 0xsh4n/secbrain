@@ -119,3 +119,21 @@ export interface ModelStatus {
   embedding: { provider: string; model: string; version: string; dim: number };
   vector_store: string;
 }
+
+
+export interface ConversationOut {
+  id: string;
+  title: string;
+  collection_ids: string[];
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface MessageOut {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  citations: Evidence[];
+  created_at: string | null;
+}
+

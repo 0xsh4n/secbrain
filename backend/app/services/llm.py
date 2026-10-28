@@ -100,10 +100,19 @@ class OllamaChat(LLMProvider):
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
+            "keep_alive": "30m",
         }
 
     def generate(self, system: str, user: str) -> str:
-        with httpx.Client(timeout=settings.llm_timeout_seconds) as client:
+        # Generous timeouts: connect quickly, but give the model plenty of
+        # time for cold-start loading and full response generation.
+        timeout = httpx.Timeout(
+            connect=30.0,
+            read=settings.llm_timeout_seconds,
+            write=30.0,
+            pool=30.0,
+        )
+        with httpx.Client(timeout=timeout) as client:
             resp = client.post(
                 f"{self.base_url}/api/chat", json=self._payload(system, user, False)
             )
@@ -113,7 +122,15 @@ class OllamaChat(LLMProvider):
     def stream(self, system: str, user: str) -> Iterator[str]:
         import json
 
-        with httpx.Client(timeout=settings.llm_timeout_seconds) as client:
+        # For streaming the read timeout applies *between chunks*, not to the
+        # total response, so keep it generous for slow models / cold starts.
+        timeout = httpx.Timeout(
+            connect=30.0,
+            read=settings.llm_timeout_seconds,
+            write=30.0,
+            pool=30.0,
+        )
+        with httpx.Client(timeout=timeout) as client:
             with client.stream(
                 "POST", f"{self.base_url}/api/chat", json=self._payload(system, user, True)
             ) as resp:
@@ -128,7 +145,7 @@ class OllamaChat(LLMProvider):
 
     def health(self) -> LLMStatus:
         try:
-            with httpx.Client(timeout=5.0) as client:
+            with httpx.Client(timeout=10.0) as client:
                 resp = client.get(f"{self.base_url}/api/tags")
                 resp.raise_for_status()
                 models = [m["name"] for m in resp.json().get("models", [])]

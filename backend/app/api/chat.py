@@ -109,9 +109,13 @@ def post_message(
     principal: Principal = Depends(require_session),
 ):
     c = _get_conv(db, principal, conv_id)
+    history = [
+        {"role": m.role, "content": m.content}
+        for m in c.messages[-6:]
+    ]
     db.add(Message(conversation_id=c.id, role="user", content=payload.message))
     evidence = _run_retrieval(db, principal, c, payload)
-    result = generate_answer(payload.message, evidence)
+    result = generate_answer(payload.message, evidence, history=history)
 
     if not result.model_available:
         # Persist the user message; surface a clear model-unavailable error.
@@ -140,6 +144,10 @@ def stream_message(
 ):
     """Server-sent-events style stream: evidence first, then answer tokens."""
     c = _get_conv(db, principal, conv_id)
+    history = [
+        {"role": m.role, "content": m.content}
+        for m in c.messages[-6:]
+    ]
     db.add(Message(conversation_id=c.id, role="user", content=payload.message))
     db.commit()
     evidence = _run_retrieval(db, principal, c, payload)
@@ -148,7 +156,7 @@ def stream_message(
     def event_gen():
         yield "event: evidence\ndata: " + json.dumps([e.to_dict() for e in evidence]) + "\n\n"
         if not evidence:
-            res = generate_answer(message, evidence)
+            res = generate_answer(message, evidence, history=history)
             yield "event: token\ndata: " + json.dumps({"text": res.answer}) + "\n\n"
             _persist_assistant(conv_id, res.answer, evidence)
             yield "event: done\ndata: {}\n\n"
@@ -156,8 +164,16 @@ def stream_message(
         provider = get_llm_provider()
         from app.services.answer import _SYSTEM_PROMPT, _build_evidence_block
 
+        history_block = ""
+        if history:
+            turns = [
+                f"{('User' if h.get('role') == 'user' else 'Assistant')}: {h.get('content', '').strip()}"
+                for h in history
+            ]
+            history_block = "PRIOR CONVERSATION CONTEXT:\n" + "\n".join(turns) + "\n\n"
+
         user_prompt = (
-            f"QUESTION: {message}\n\n{_build_evidence_block(evidence)}\n\n"
+            f"{history_block}CURRENT QUESTION: {message}\n\n{_build_evidence_block(evidence)}\n\n"
             "Answer grounded in the evidence, citing labels like [E1]."
         )
         collected: list[str] = []
