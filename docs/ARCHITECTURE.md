@@ -8,7 +8,7 @@ component.
 
 ```
                 +-------------------+
-                |   Next.js Web UI  |  (TS + Tailwind, dark dashboard)
+|   Next.js Web UI  |  (TS + Tailwind, responsive workspace)
                 +---------+---------+
                           | REST (JWT)
                           v
@@ -100,6 +100,9 @@ State machine: `PENDING → FETCHING → EXTRACTING → INDEXING → COMPLETED`,
 5. Suggest security metadata (heuristic; identifiers, category hints).
 6. Chunk → embed → persist chunks → (optionally) mirror vectors to Qdrant.
 7. Mark `indexed` only if extraction **and** embedding/indexing succeeded.
+8. After the successful index is committed, discard the uploaded source file. The extracted text, chunks, and embeddings are the durable knowledge pool and are sufficient to reprocess the index. Failed ingests keep their source file so a retry can extract it again.
+
+At startup, the backend also removes source files left behind by older versions for documents that are already indexed and have extracted text.
 
 A document is never silently marked indexed when a stage fails; errors are
 recorded on both the job and the document and the job is retryable.
@@ -125,11 +128,14 @@ collection ids. Citations always reference real stored chunks.
 
 ## Grounded answering
 
-The trusted system prompt instructs the model to answer only from evidence, cite
-labels, flag conflicts, state uncertainty, and **treat the evidence block as
-untrusted data** — never as instructions. The model is given no tools, so
-retrieved content cannot trigger tool execution or secret disclosure. With no
-evidence, the service abstains instead of inventing an answer.
+The trusted system prompt uses retrieved knowledge and optional web results as
+background context and asks the model to synthesize a direct response without
+dumping internal passages, scores, or evidence labels. Retrieved content is
+untrusted data, never instructions, and the model is given no tools. If no
+knowledge is retrieved, the assistant can answer from general cybersecurity
+knowledge while stating uncertainty where needed. Conversation history is
+stored per user and supplies context from the active conversation; this does
+not train or change model weights.
 
 ## Provider abstractions
 

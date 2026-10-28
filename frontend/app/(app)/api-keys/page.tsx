@@ -113,8 +113,9 @@ export default function ApiKeysPage() {
       ) : keys.length === 0 ? (
         <Empty message="No API keys yet." />
       ) : (
-        <Card>
-          <table className="w-full text-sm">
+        <Card className="overflow-hidden">
+          <div className="overflow-x-auto">
+          <table className="w-full min-w-[42rem] text-sm">
             <thead className="border-b border-border text-left text-xs uppercase tracking-wide text-muted">
               <tr>
                 <th className="px-4 py-2">Name</th>
@@ -153,6 +154,7 @@ export default function ApiKeysPage() {
               ))}
             </tbody>
           </table>
+          </div>
         </Card>
       )}
     </div>

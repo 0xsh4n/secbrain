@@ -56,16 +56,16 @@ export default function DocumentDetailPage() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-xl font-semibold">{doc.title}</h1>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
+          <h1 className="break-words text-xl font-semibold">{doc.title}</h1>
           <div className="mt-1 flex items-center gap-2 text-sm text-muted">
             <Badge>{doc.status}</Badge>
             <span className="font-mono">{doc.source_type}</span>
             {doc.is_duplicate && <span className="text-warn">duplicate of {doc.duplicate_of_id}</span>}
           </div>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <Button variant="ghost" onClick={reprocess} disabled={busy}>
             Reprocess
           </Button>

@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import math
 import re
+import heapq
+from collections import defaultdict
 from dataclasses import dataclass, field
 
 # Minimal English stopword list for lexical grounding (keeps distinctive terms).
@@ -160,122 +162,149 @@ def _content_terms(text: str) -> set[str]:
     }
 
 
-def _idf_overlap(query_terms: set[str], candidate_terms: list[set[str]]) -> list[float]:
-    """IDF-weighted fraction of the query's informational mass each candidate
-    matches. Terms absent from the whole corpus still count toward the query's
-    total weight, so a query whose distinctive terms appear nowhere scores low
-    everywhere (-> abstention)."""
-    if not query_terms:
-        return [0.0] * len(candidate_terms)
-    n = len(candidate_terms)
-    df = {t: sum(1 for ts in candidate_terms if t in ts) for t in query_terms}
-    idf = {t: math.log((n + 1) / (df[t] + 1)) + 1.0 for t in query_terms}
-    total = sum(idf.values()) or 1.0
-    out = []
-    for ts in candidate_terms:
-        matched = sum(idf[t] for t in query_terms if t in ts)
-        out.append(matched / total)
-    return out
+_RETRIEVAL_BATCH_SIZE = 256
 
 
-def _minmax(values: list[float]) -> list[float]:
-    if not values:
-        return []
-    lo, hi = min(values), max(values)
-    if hi - lo < 1e-9:
-        return [0.0 for _ in values]
-    return [(v - lo) / (hi - lo) for v in values]
+def _iter_chunk_batches(db: Session, statement):
+    result = db.execute(statement.execution_options(yield_per=_RETRIEVAL_BATCH_SIZE))
+    try:
+        yield from result.partitions(_RETRIEVAL_BATCH_SIZE)
+    finally:
+        result.close()
+
+
+def _batch_scores(rows, query_vec: list[float]) -> list[float]:
+    matrix = [decode_vector(row.embedding) for row in rows]
+    return cosine_scores(query_vec, matrix)
+
+
+def _lexical_score(terms: set[str], idf: dict[str, float], total_weight: float) -> float:
+    if total_weight <= 0:
+        return 0.0
+    return sum(idf[term] for term in terms if term in idf) / total_weight
 
 
 def retrieve(db: Session, user: User, params: RetrievalParams) -> list[Evidence]:
+    """Scan the corpus in small batches and retain only final candidates."""
     doc_ids = _resolve_scope_document_ids(db, user, params)
     if not doc_ids:
         return []
 
     provider = get_embedding_provider()
-    # Over-fetch candidate chunks (bounded) before fusion.
-    candidate_limit = max(params.top_k * settings.retrieval_candidate_multiplier, params.top_k)
-
-    rows = db.execute(
-        select(Chunk, Document)
-        .join(Document, Chunk.document_id == Document.id)
-        .where(Chunk.document_id.in_(doc_ids))
-        # Only score chunks embedded in the CURRENT embedding space.
-        .where(Chunk.embedding_model == provider.version)
-    ).all()
-    if not rows:
-        return []
-
     query_vec = provider.embed_one(params.query)
-    matrix = [decode_vector(chunk.embedding) for chunk, _ in rows]
-    vec_scores = cosine_scores(query_vec, matrix)
-
     query_terms = _content_terms(params.query)
     identifiers = set(all_identifiers(params.query))
-    candidate_terms = [_content_terms(chunk.text) for chunk, _ in rows]
-    lex_scores = _idf_overlap(query_terms, candidate_terms)
-    has_identifier = [
-        any(ident.lower() in chunk.text.lower() for ident in identifiers)
-        for chunk, _ in rows
-    ]
+    candidate_limit = max(params.top_k * settings.retrieval_candidate_multiplier, params.top_k)
+    statement = (
+        select(
+            Chunk.id.label("chunk_id"), Chunk.document_id.label("document_id"),
+            Chunk.embedding.label("embedding"), Chunk.text.label("text"),
+            Chunk.page_number.label("page_number"), Chunk.section_heading.label("section_heading"),
+            Document.title.label("title"), Document.source_url.label("source_url"),
+            Document.source_type.label("source_type"),
+        )
+        .join(Document, Chunk.document_id == Document.id)
+        .where(Chunk.document_id.in_(doc_ids), Chunk.embedding_model == provider.version)
+        .order_by(Document.created_at.desc(), Chunk.ordinal.asc())
+        .limit(max(100, settings.retrieval_max_scan_chunks))
+    )
 
-    # Relevance gate -> controls abstention on unsupported questions.
-    qualifying: list[int] = []
-    for i in range(len(rows)):
-        ok = has_identifier[i] or lex_scores[i] >= settings.retrieval_min_lexical
-        if not settings.retrieval_require_lexical_grounding:
-            ok = ok or vec_scores[i] >= settings.retrieval_min_cosine
-        if ok:
-            qualifying.append(i)
-    if not qualifying:
+    # Pass 1: corpus-wide term frequencies, with only one batch of text resident.
+    document_frequency = dict.fromkeys(query_terms, 0)
+    row_count = 0
+    for batch in _iter_chunk_batches(db, statement):
+        for row in batch:
+            row_count += 1
+            for term in _content_terms(row.text) & query_terms:
+                document_frequency[term] += 1
+    if row_count == 0:
+        return []
+    idf = {term: math.log((row_count + 1) / (frequency + 1)) + 1.0 for term, frequency in document_frequency.items()}
+    total_idf = sum(idf.values())
+
+    def scored_batches():
+        for batch in _iter_chunk_batches(db, statement):
+            vector_scores = _batch_scores(batch, query_vec)
+            for row, vector_score in zip(batch, vector_scores):
+                terms = _content_terms(row.text)
+                lexical_score = _lexical_score(terms, idf, total_idf)
+                has_identifier = any(identifier.lower() in row.text.lower() for identifier in identifiers)
+                qualifies = has_identifier or lexical_score >= settings.retrieval_min_lexical
+                if not settings.retrieval_require_lexical_grounding:
+                    qualifies = qualifies or vector_score >= settings.retrieval_min_cosine
+                if qualifies:
+                    yield row, vector_score, lexical_score, has_identifier
+
+    # Pass 2: corpus-wide score ranges for the existing min-max fusion.
+    vector_min = lexical_min = float("inf")
+    vector_max = lexical_max = float("-inf")
+    qualified_count = 0
+    for _row, vector_score, lexical_score, _identifier in scored_batches():
+        vector_min, vector_max = min(vector_min, vector_score), max(vector_max, vector_score)
+        lexical_min, lexical_max = min(lexical_min, lexical_score), max(lexical_max, lexical_score)
+        qualified_count += 1
+    if qualified_count == 0:
         return []
 
-    nv_all = _minmax([vec_scores[i] for i in qualifying])
-    nl_all = _minmax([lex_scores[i] for i in qualifying])
-
-    scored: list[tuple[float, str, Chunk, Document]] = []
-    for pos, i in enumerate(qualifying):
-        chunk, doc = rows[i]
-        nv_i, nl_i = nv_all[pos], nl_all[pos]
-        id_boost = 0.25 if has_identifier[i] else 0.0
-        fused = 0.55 * nv_i + 0.45 * nl_i + id_boost
-        if has_identifier[i]:
+    # Pass 3: stream scores into a bounded top-candidate heap.
+    heap: list[tuple[float, int, float, str, object]] = []
+    sequence = 0
+    for row, vector_score, lexical_score, has_identifier in scored_batches():
+        normalized_vector = 0.0 if vector_max - vector_min < 1e-9 else (vector_score - vector_min) / (vector_max - vector_min)
+        normalized_lexical = 0.0 if lexical_max - lexical_min < 1e-9 else (lexical_score - lexical_min) / (lexical_max - lexical_min)
+        fused = 0.55 * normalized_vector + 0.45 * normalized_lexical + (0.25 if has_identifier else 0.0)
+        if fused < params.min_score:
+            continue
+        if has_identifier:
             method = "hybrid+identifier"
-        elif nl_i > 0 and nv_i > 0:
+        elif normalized_lexical > 0 and normalized_vector > 0:
             method = "hybrid"
-        elif nl_i > 0:
+        elif normalized_lexical > 0:
             method = "keyword"
         else:
             method = "vector"
-        scored.append((fused, method, chunk, doc))
+        rank = fused
+        if params.rerank:
+            if query_terms & _content_terms(row.section_heading or ""):
+                rank += 0.1
+            if any(identifier.lower() in row.text.lower() for identifier in identifiers):
+                rank += 0.2
+        entry = (rank, sequence, fused, method, row)
+        sequence += 1
+        if len(heap) < candidate_limit:
+            heapq.heappush(heap, entry)
+        elif entry[:2] > heap[0][:2]:
+            heapq.heapreplace(heap, entry)
 
-    scored.sort(key=lambda t: t[0], reverse=True)
+    selected = sorted(heap, key=lambda entry: (entry[0], entry[1]), reverse=True)
+    selected = selected[:params.top_k]
+    document_ids = {entry[4].document_id for entry in selected}
+    memberships: dict[str, list[str]] = defaultdict(list)
+    if document_ids:
+        from app.models.collection import document_collections
+        links = db.execute(
+            select(document_collections.c.document_id, document_collections.c.collection_id)
+            .where(document_collections.c.document_id.in_(document_ids))
+        ).all()
+        for document_id, collection_id in links:
+            memberships[document_id].append(collection_id)
 
-    if params.rerank:
-        scored = _lexical_rerank(query_terms, identifiers, scored)
-
-    results: list[Evidence] = []
-    for fused, method, chunk, doc in scored[: candidate_limit]:
-        if fused < params.min_score:
-            continue
-        results.append(
-            Evidence(
-                document_id=doc.id,
-                chunk_id=chunk.id,
-                title=doc.title or "(untitled)",
-                source_url=doc.source_url,
-                source_type=doc.source_type,
-                text=chunk.text,
-                page_number=chunk.page_number,
-                section_heading=chunk.section_heading,
-                retrieval_method=method,
-                score=fused,
-                collection_ids=[c.id for c in doc.collections],
-            )
+    return [
+        Evidence(
+            document_id=row.document_id,
+            chunk_id=row.chunk_id,
+            title=row.title or "(untitled)",
+            source_url=row.source_url,
+            source_type=row.source_type,
+            text=row.text,
+            page_number=row.page_number,
+            section_heading=row.section_heading or "",
+            retrieval_method=method,
+            score=fused,
+            collection_ids=memberships.get(row.document_id, []),
         )
-        if len(results) >= params.top_k:
-            break
-    return results
+        for _rank, _seq, fused, method, row in selected
+    ]
 
 
 def _lexical_rerank(

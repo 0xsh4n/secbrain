@@ -82,8 +82,9 @@ export default function LibraryPage() {
       ) : !page || page.items.length === 0 ? (
         <Empty message="No documents match. Ingest some knowledge to get started." />
       ) : (
-        <Card>
-          <table className="w-full text-sm">
+        <Card className="overflow-hidden">
+          <div className="overflow-x-auto">
+          <table className="w-full min-w-[42rem] text-sm">
             <thead className="border-b border-border text-left text-xs uppercase tracking-wide text-muted">
               <tr>
                 <th className="px-4 py-2">Title</th>
@@ -110,11 +111,12 @@ export default function LibraryPage() {
               ))}
             </tbody>
           </table>
+          </div>
         </Card>
       )}
 
       {page && page.total > limit && (
-        <div className="flex items-center justify-between text-sm text-muted">
+        <div className="flex flex-wrap items-center justify-between gap-3 text-sm text-muted">
           <span>
             {offset + 1}–{Math.min(offset + limit, page.total)} of {page.total}
           </span>

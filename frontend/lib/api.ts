@@ -50,7 +50,16 @@ export async function api<T>(path: string, opts: RequestOptions = {}): Promise<T
       payload = JSON.stringify(body);
     }
   }
-  const res = await fetch(`${API_URL}/api/v1${path}`, { method, headers, body: payload });
+  let res: Response;
+  try {
+    res = await fetch(`${API_URL}/api/v1${path}`, { method, headers, body: payload });
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : "Network request failed";
+    throw new ApiError(
+      0,
+      `Cannot reach SecBrain API at ${API_URL}. Check that the backend is running and NEXT_PUBLIC_API_URL points to it. (${reason})`
+    );
+  }
   if (res.status === 204) return undefined as T;
   const text = await res.text();
   let data: unknown;

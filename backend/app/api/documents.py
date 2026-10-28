@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import json
+import uuid
+import zipfile
 from datetime import timedelta
+from tempfile import SpooledTemporaryFile
+from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import (
     APIRouter,
@@ -13,11 +18,14 @@ from fastapi import (
     UploadFile,
     status,
 )
+from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import Principal, get_principal, require_session
 from app.config import settings
+from app.core.slugs import slugify
+from app.core.taxonomy import SECURITY_CATEGORIES
 from app.db import get_db
 from app.models.collection import Collection, Tag, document_collections
 from app.models.document import Document, IngestionJob
@@ -31,8 +39,10 @@ from app.schemas.document import (
     UrlIngestRequest,
 )
 from app.services import audit
+from app.services.storage import get_storage
 from app.services.permissions import (
     accessible_collection_ids,
+    can_read_collection,
     can_read_document,
     can_write_document,
 )
@@ -40,6 +50,47 @@ from app.services.tasks import run_ingestion, run_retry
 from app.services.vectorstore import get_qdrant, is_qdrant_enabled
 
 router = APIRouter(prefix="/documents", tags=["documents"])
+
+_BACKUP_VERSION = 2
+_BACKUP_MAX_BYTES = 512 * 1024 * 1024
+_BACKUP_MAX_UNCOMPRESSED_BYTES = 2 * 1024 * 1024 * 1024
+_BACKUP_MAX_FILES = 5000
+_SOURCE_EXTENSIONS = {"pdf": "pdf", "txt": "txt", "markdown": "md", "html": "html", "docx": "docx"}
+
+
+def _backup_source_url(value: str) -> str:
+    """Keep citation provenance without exporting URL credentials or query tokens."""
+    if not value:
+        return ""
+    try:
+        parsed = urlsplit(value)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            return ""
+        host = parsed.hostname
+        if parsed.port:
+            host = f"{host}:{parsed.port}"
+        return urlunsplit((parsed.scheme, host, parsed.path, "", ""))
+    except (ValueError, TypeError):
+        return ""
+
+
+def _accessible_documents(db: Session, principal: Principal) -> list[Document]:
+    user = principal.user
+    accessible = accessible_collection_ids(db, user)
+    if principal.is_api and principal.scoped_collection_ids:
+        accessible &= set(principal.scoped_collection_ids)
+    stmt = select(Document).where(Document.organization_id == user.organization_id)
+    if principal.is_api or not user.is_admin:
+        coll_docs = select(document_collections.c.document_id).where(
+            document_collections.c.collection_id.in_(accessible or [""])
+        )
+        from sqlalchemy import or_
+
+        clause = Document.id.in_(coll_docs)
+        if not principal.is_api:
+            clause = or_(Document.owner_id == user.id, clause)
+        stmt = stmt.where(clause)
+    return db.execute(stmt.order_by(Document.created_at.asc())).scalars().unique().all()
 
 _EXT_TO_TYPE = {
     "pdf": "pdf",
@@ -164,8 +215,6 @@ async def upload_document(
     db: Session = Depends(get_db),
     principal: Principal = Depends(require_session),
 ):
-    from app.services.storage import get_storage
-
     data = await file.read()
     if len(data) == 0:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Empty file")
@@ -232,6 +281,254 @@ def ingest_url(
         collection_ids=payload.collection_ids,
     )
     return _serialize(doc)
+
+
+@router.get("/backup/export")
+def export_library_backup(
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(require_session),
+):
+    """Export accessible knowledge documents as a portable, re-indexable ZIP."""
+    user = principal.user
+    archive = SpooledTemporaryFile(max_size=16 * 1024 * 1024, mode="w+b")
+    manifest = {"format": "secbrain-library", "version": _BACKUP_VERSION, "documents": []}
+
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
+        for index, doc in enumerate(_accessible_documents(db, principal), start=1):
+            # Back up the ingested knowledge representation, never original PDFs/files.
+            text = (doc.extracted_text or "").strip()
+            if not text:
+                continue
+            raw = text.encode("utf-8")
+            archive_path = f"knowledge/{index:06d}.txt"
+            bundle.writestr(archive_path, raw)
+            allowed_collections = [
+                c for c in doc.collections if can_read_collection(db, user, c)
+            ]
+            manifest["documents"].append(
+                {
+                    "path": archive_path,
+                    "content_kind": "extracted_text",
+                    "title": doc.title or f"Document {index}",
+                    "source_type": doc.source_type,
+                    "source_url": _backup_source_url(doc.source_url),
+                    "author": doc.author,
+                    "summary": doc.summary,
+                    "mime_type": doc.mime_type,
+                    "content_hash": doc.content_hash,
+                    "tags": [tag.name for tag in doc.tags],
+                    "collections": [
+                        {"name": c.name, "description": c.description, "category": c.category}
+                        for c in allowed_collections
+                    ],
+                }
+            )
+        manifest["created_at"] = utcnow().isoformat()
+        bundle.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
+
+    archive.seek(0)
+
+    def stream_archive():
+        try:
+            while chunk := archive.read(1024 * 1024):
+                yield chunk
+        finally:
+            archive.close()
+
+    return StreamingResponse(
+        stream_archive(),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": 'attachment; filename="secbrain-library-backup.zip"',
+            "Cache-Control": "private, no-store",
+        },
+    )
+
+
+@router.post("/backup/import", status_code=status.HTTP_202_ACCEPTED)
+async def import_library_backup(
+    background: BackgroundTasks,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(require_session),
+):
+    """Restore documents from a SecBrain backup, then rebuild their indexes."""
+    upload = file.file
+    upload.seek(0, 2)
+    archive_size = upload.tell()
+    upload.seek(0)
+    if archive_size <= 0:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Choose a non-empty ZIP backup")
+    if archive_size > _BACKUP_MAX_BYTES:
+        raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "Backup ZIP exceeds the 512 MB limit")
+
+    try:
+        bundle = zipfile.ZipFile(upload)
+    except (zipfile.BadZipFile, OSError):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "This file is not a valid ZIP backup")
+
+    with bundle:
+        infos = bundle.infolist()
+        if len(infos) > _BACKUP_MAX_FILES + 1:
+            raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "Backup contains too many files")
+        total_uncompressed = sum(info.file_size for info in infos)
+        if total_uncompressed > _BACKUP_MAX_UNCOMPRESSED_BYTES:
+            raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "Uncompressed backup exceeds the 2 GB limit")
+        for info in infos:
+            member = PurePosixPath(info.filename)
+            if member.is_absolute() or ".." in member.parts or "\\" in info.filename:
+                raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Backup contains an unsafe file path")
+
+        try:
+            manifest = json.loads(bundle.read("manifest.json"))
+        except (KeyError, json.JSONDecodeError, UnicodeDecodeError):
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Backup manifest is missing or invalid")
+        if (
+            not isinstance(manifest, dict)
+            or manifest.get("format") != "secbrain-library"
+            or manifest.get("version") not in {1, _BACKUP_VERSION}
+            or not isinstance(manifest.get("documents"), list)
+        ):
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Unsupported SecBrain backup format")
+        if len(manifest["documents"]) > _BACKUP_MAX_FILES:
+            raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "Backup contains too many documents")
+
+        user = principal.user
+        storage = get_storage()
+        accessible_hashes = {
+            doc.content_hash
+            for doc in _accessible_documents(db, principal)
+            if doc.content_hash and not doc.is_duplicate
+        }
+        collection_map: dict[tuple[str, str], Collection] = {}
+        imported = 0
+        skipped = 0
+
+        for entry in manifest["documents"]:
+            if not isinstance(entry, dict) or not isinstance(entry.get("path"), str):
+                skipped += 1
+                continue
+            member = PurePosixPath(entry["path"])
+            if member.is_absolute() or ".." in member.parts or entry["path"] not in bundle.namelist():
+                skipped += 1
+                continue
+            info = bundle.getinfo(entry["path"])
+            if info.file_size > settings.max_upload_bytes:
+                skipped += 1
+                continue
+            try:
+                raw = bundle.read(info)
+            except (zipfile.BadZipFile, OSError):
+                skipped += 1
+                continue
+            if not raw:
+                skipped += 1
+                continue
+
+            content_hash = str(entry.get("content_hash") or "")
+            if content_hash and content_hash in accessible_hashes:
+                skipped += 1
+                continue
+
+            title = str(entry.get("title") or "Imported document")[:500]
+            content_kind = entry.get("content_kind")
+            source_url = _backup_source_url(str(entry.get("source_url") or ""))
+            storage_key = ""
+            inline_text = ""
+            source_type = "text"
+            extension = member.suffix.lstrip(".").lower()
+            if content_kind == "file" and extension in _SOURCE_EXTENSIONS.values():
+                source_type = next(
+                    (kind for kind, ext in _SOURCE_EXTENSIONS.items() if ext == extension),
+                    "text",
+                )
+                storage_key = f"{user.organization_id}/{uuid.uuid4().hex}.{extension}"
+                storage.save(storage_key, raw)
+            else:
+                try:
+                    inline_text = raw.decode("utf-8")
+                except UnicodeDecodeError:
+                    skipped += 1
+                    continue
+
+            collection_ids: list[str] = []
+            collection_entries = entry.get("collections", [])
+            if isinstance(collection_entries, list):
+                for collection_entry in collection_entries[:50]:
+                    if not isinstance(collection_entry, dict):
+                        continue
+                    name = str(collection_entry.get("name") or "Imported library")[:200].strip()
+                    if not name:
+                        continue
+                    category = str(collection_entry.get("category") or "")[:60]
+                    if category not in SECURITY_CATEGORIES:
+                        category = ""
+                    key = (name, category)
+                    collection = collection_map.get(key)
+                    if collection is None:
+                        slug = slugify(name, "imported-library")[:120]
+                        existing = db.execute(
+                            select(Collection).where(
+                                Collection.organization_id == user.organization_id,
+                                Collection.slug == slug,
+                            )
+                        ).scalars().first()
+                        if (
+                            existing
+                            and existing.name == name
+                            and existing.owner_id == user.id
+                            and existing.visibility == "private"
+                        ):
+                            collection = existing
+                        else:
+                            while existing:
+                                slug = f"{slug[:110]}-{uuid.uuid4().hex[:8]}"
+                                existing = db.execute(
+                                    select(Collection).where(
+                                        Collection.organization_id == user.organization_id,
+                                        Collection.slug == slug,
+                                    )
+                                ).scalars().first()
+                            collection = Collection(
+                                organization_id=user.organization_id,
+                                owner_id=user.id,
+                                name=name,
+                                slug=slug,
+                                description=str(collection_entry.get("description") or "")[:1000],
+                                category=category,
+                                visibility="private",
+                            )
+                            db.add(collection)
+                            db.flush()
+                        collection_map[key] = collection
+                    collection_ids.append(collection.id)
+
+            doc = _create_and_queue(
+                db,
+                principal,
+                background,
+                title=title,
+                source_type=source_type,
+                source_url=source_url,
+                storage_key=storage_key,
+                mime_type=str(entry.get("mime_type") or "")[:120],
+                inline_text=inline_text,
+                collection_ids=collection_ids,
+                byte_size=len(raw),
+            )
+            doc.author = str(entry.get("author") or "")[:300]
+            doc.summary = str(entry.get("summary") or "")[:20000]
+            doc.content_hash = content_hash
+            tags = entry.get("tags", [])
+            if isinstance(tags, list):
+                doc.tags = _resolve_tags(db, user.organization_id, [str(tag) for tag in tags[:100]])
+            db.add(doc)
+            imported += 1
+            if content_hash:
+                accessible_hashes.add(content_hash)
+
+        db.commit()
+        return {"imported": imported, "skipped": skipped, "message": "Imported documents are queued for re-indexing."}
 
 
 @router.get("", response_model=dict)

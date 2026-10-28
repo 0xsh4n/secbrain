@@ -2,7 +2,7 @@ import { ReactNode, ButtonHTMLAttributes, InputHTMLAttributes, TextareaHTMLAttri
 
 export function Card({ children, className = "" }: { children: ReactNode; className?: string }) {
   return (
-    <div className={`rounded-lg border border-border bg-surface ${className}`}>{children}</div>
+    <div className={`rounded-2xl border border-border/80 bg-surface/80 shadow-[0_12px_40px_rgba(0,0,0,0.12)] ${className}`}>{children}</div>
   );
 }
 
@@ -28,7 +28,7 @@ export function Button({
   }[variant];
   return (
     <button
-      className={`rounded-md px-3 py-1.5 text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${styles} ${className}`}
+      className={`min-h-10 rounded-xl px-3 py-2 text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${styles} ${className}`}
       {...props}
     >
       {children}
@@ -40,7 +40,7 @@ export function Input(props: InputHTMLAttributes<HTMLInputElement>) {
   return (
     <input
       {...props}
-      className={`w-full rounded-md border border-border bg-surface-2 px-3 py-2 text-sm text-fg outline-none focus:border-accent ${props.className || ""}`}
+      className={`min-h-10 w-full rounded-xl border border-border bg-surface-2 px-3 py-2 text-sm text-fg outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/15 ${props.className || ""}`}
     />
   );
 }
@@ -49,7 +49,7 @@ export function Textarea(props: TextareaHTMLAttributes<HTMLTextAreaElement>) {
   return (
     <textarea
       {...props}
-      className={`w-full rounded-md border border-border bg-surface-2 px-3 py-2 text-sm text-fg outline-none focus:border-accent ${props.className || ""}`}
+      className={`w-full rounded-xl border border-border bg-surface-2 px-3 py-2 text-sm text-fg outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/15 ${props.className || ""}`}
     />
   );
 }
@@ -58,7 +58,7 @@ export function Select(props: SelectHTMLAttributes<HTMLSelectElement>) {
   return (
     <select
       {...props}
-      className={`w-full rounded-md border border-border bg-surface-2 px-3 py-2 text-sm text-fg outline-none focus:border-accent ${props.className || ""}`}
+      className={`min-h-10 w-full rounded-xl border border-border bg-surface-2 px-3 py-2 text-sm text-fg outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/15 ${props.className || ""}`}
     />
   );
 }
@@ -114,8 +114,8 @@ export function Spinner() {
 export function Stat({ label, value }: { label: string; value: ReactNode }) {
   return (
     <Card className="p-4">
-      <div className="text-xs uppercase tracking-wide text-muted">{label}</div>
-      <div className="mt-1 text-2xl font-semibold text-fg">{value}</div>
+      <div className="text-[10px] font-medium uppercase tracking-[0.16em] text-muted sm:text-xs">{label}</div>
+      <div className="mt-1 break-words text-xl font-semibold text-fg sm:text-2xl">{value}</div>
     </Card>
   );
 }

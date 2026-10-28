@@ -43,14 +43,14 @@ export default function SearchPage() {
     <div className="space-y-4">
       <h1 className="text-xl font-semibold">Search Knowledge</h1>
       <form onSubmit={run} className="space-y-3">
-        <div className="flex gap-2">
+        <div className="flex flex-col gap-2 sm:flex-row">
           <Input
             placeholder="e.g. How to prevent BOLA? CVE-2021-44228 fixed version?"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             required
           />
-          <Button type="submit" disabled={loading}>
+          <Button type="submit" disabled={loading} className="sm:shrink-0">
             Search
           </Button>
         </div>

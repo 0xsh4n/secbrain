@@ -11,6 +11,7 @@ succeeded. Failures are captured on both the job and the document.
 from __future__ import annotations
 
 import hashlib
+import logging
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -32,6 +33,22 @@ from app.services.vectorstore import (
 )
 
 _URL_TYPES = {"url", "github", "twitter"}
+logger = logging.getLogger(__name__)
+
+
+def _discard_source_file(db: Session, doc: Document) -> None:
+    """Keep the extracted knowledge; remove the original after it is safely indexed."""
+    if not doc.storage_key:
+        return
+    key = doc.storage_key
+    try:
+        get_storage().delete(key)
+    except Exception:
+        logger.exception("Could not discard processed source file for document %s", doc.id)
+        return
+    doc.storage_key = ""
+    db.add(doc)
+    db.commit()
 
 
 def _set_state(db: Session, job: IngestionJob, state: str, progress: float, detail: str = "") -> None:
@@ -89,7 +106,14 @@ def _load_source_bytes(db: Session, job: IngestionJob, doc: Document) -> tuple[b
         return result.content, "txt"
     # Uploaded / stored source.
     if doc.storage_key:
-        return get_storage().read(doc.storage_key), doc.source_type
+        try:
+            return get_storage().read(doc.storage_key), doc.source_type
+        except FileNotFoundError:
+            # A previous cleanup may have removed the upload before its DB
+            # pointer was cleared; the extracted text remains authoritative.
+            if doc.extracted_text:
+                return doc.extracted_text.encode("utf-8"), "text"
+            raise
     # Pasted text stored inline in extracted_text already.
     return doc.extracted_text.encode("utf-8"), "text"
 
@@ -115,7 +139,14 @@ def process_document(db: Session, document_id: str) -> None:
     db.commit()
 
     try:
-        raw, effective_type = _load_source_bytes(db, job, doc)
+        # Once the original upload has been discarded, re-index from the
+        # canonical extracted text retained in the knowledge pool.
+        if doc.storage_key:
+            raw, effective_type = _load_source_bytes(db, job, doc)
+        elif doc.extracted_text and doc.source_type not in _URL_TYPES:
+            raw, effective_type = doc.extracted_text.encode("utf-8"), "text"
+        else:
+            raw, effective_type = _load_source_bytes(db, job, doc)
 
         _set_state(db, job, "EXTRACTING", 0.4, "Extracting and normalizing content")
         if doc.source_type == "text" and effective_type == "text":
@@ -148,6 +179,7 @@ def process_document(db: Session, document_id: str) -> None:
             doc.chunk_count = 0
             db.add(doc)
             _set_state(db, job, "COMPLETED", 1.0, f"Duplicate of document {dup.id}")
+            _discard_source_file(db, doc)
             return
 
         # Heuristic security metadata (model-independent).
@@ -205,6 +237,10 @@ def process_document(db: Session, document_id: str) -> None:
         doc.extraction_error = ""
         db.add(doc)
         db.commit()
+
+        # The extracted text, chunks, and embeddings are now committed. Keep
+        # those as the durable library and drop the bulky upload.
+        _discard_source_file(db, doc)
 
         # Optional external vector store mirror.
         if is_qdrant_enabled():

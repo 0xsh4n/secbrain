@@ -55,7 +55,7 @@ export default function CollectionsPage() {
           <form onSubmit={create} className="space-y-3">
             <Input placeholder="Name" value={name} onChange={(e) => setName(e.target.value)} required />
             <Textarea placeholder="Description" value={description} onChange={(e) => setDescription(e.target.value)} />
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <Select value={category} onChange={(e) => setCategory(e.target.value)}>
                 <option value="">(no category)</option>
                 {categories.map((c) => (

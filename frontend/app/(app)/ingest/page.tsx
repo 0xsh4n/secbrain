@@ -74,7 +74,7 @@ export default function IngestPage() {
       <h1 className="text-xl font-semibold">Ingestion Queue</h1>
 
       <Card className="p-4">
-        <div className="mb-4 flex gap-2">
+        <div className="mb-4 flex flex-wrap gap-2">
           {(["text", "url", "file"] as Mode[]).map((m) => (
             <button
               key={m}
@@ -139,12 +139,12 @@ export default function IngestPage() {
         <div className="divide-y divide-border">
           {jobs.length === 0 && <Empty message="No ingestion jobs yet" />}
           {jobs.map((j) => (
-            <div key={j.id} className="flex items-center justify-between px-4 py-3 text-sm">
-              <a href={`/documents/${j.document_id}`} className="font-mono text-xs text-accent hover:underline">
+            <div key={j.id} className="flex flex-col gap-2 px-4 py-3 text-sm sm:flex-row sm:items-center sm:justify-between">
+              <a href={`/documents/${j.document_id}`} className="w-fit font-mono text-xs text-accent hover:underline">
                 {j.document_id.slice(0, 12)}…
               </a>
-              <span className="flex-1 px-4 text-muted">{j.detail || j.error}</span>
-              <Badge>{j.state}</Badge>
+              <span className="min-w-0 break-words text-xs text-muted sm:flex-1 sm:px-4 sm:text-sm">{j.detail || j.error}</span>
+              <span className="w-fit"><Badge>{j.state}</Badge></span>
             </div>
           ))}
         </div>

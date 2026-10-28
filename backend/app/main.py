@@ -14,11 +14,13 @@ from app.api import (
     collections,
     dashboard,
     documents,
+    drive_sync,
     health,
     knowledge,
     models,
 )
 from app.config import settings
+from app.services.tasks import purge_indexed_source_files
 
 logging.basicConfig(
     level=logging.INFO,
@@ -33,6 +35,13 @@ app = FastAPI(
     docs_url="/docs",
     openapi_url="/api/v1/openapi.json",
 )
+
+
+@app.on_event("startup")
+def discard_already_indexed_uploads() -> None:
+    # The library keeps extracted text and chunks; the source files are no
+    # longer needed once indexing has completed.
+    purge_indexed_source_files()
 
 app.add_middleware(
     CORSMiddleware,
@@ -66,6 +75,7 @@ for module in (
     auth,
     collections,
     documents,
+    drive_sync,
     knowledge,
     chat,
     models,

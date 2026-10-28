@@ -20,6 +20,7 @@ slowapi==0.1.10                 # rate limiting
 
 # HTTP client (providers + URL ingestion)
 httpx==0.28.1
+cryptography==46.0.3
 
 # Document extraction
 pypdf==6.21.3

@@ -18,6 +18,11 @@ reads env at runtime).
 (`docker compose up --build` or `npm run build`). Ensure the backend's
 `SECBRAIN_CORS_ORIGINS` includes the frontend origin (e.g. `http://localhost:3000`).
 
+**Mobile navigation covers the page or looks cramped.**
+The mobile workspace uses a fixed bottom navigation bar and reserves space for
+it in the page layout. If a custom browser zoom or large display scaling causes
+overlap, reset zoom to 100% and reload. Wide tables can be swiped horizontally.
+
 ---
 
 ## Local Models & Ollama
@@ -91,6 +96,15 @@ Its normalized content hash matches an already-indexed document in the same org.
 Duplicates are recorded (and point at the original) but not re-embedded, to save
 compute and avoid double-returning the same evidence.
 
+**Where are my uploaded PDFs after ingestion?**
+After successful indexing, SecBrain deletes uploaded source files and retains
+the extracted text, metadata, and searchable chunks in the knowledge pool.
+This frees storage and still allows re-indexing from the extracted text. If an
+ingest fails before indexing completes, its upload is kept for retry. Existing
+indexed uploads are removed on the next backend start. Export a library backup
+from Settings before moving to another PC; backups contain extracted knowledge,
+not source PDFs.
+
 **Search returns nothing relevant / abstains.**  
 This is intended when the knowledge base has nothing matching the query's
 distinctive terms. Ingest relevant documents, widen the collection selection, or
@@ -113,6 +127,31 @@ With defaults (`VECTOR_STORE=memory`, `*_PROVIDER=fake`) neither is required.
 **Low memory on the host.**  
 Don't run Postgres + Qdrant + Ollama + both app servers at once on an 8 GB box.
 Run Ollama on the host and SecBrain in Docker, or use lightweight models (`qwen2.5:3b`, `qwen2.5:1.5b`).
+
+## Voice input
+
+**Voice input shows a network or service error.**
+The microphone stream and live audio visualizer use browser microphone access;
+speech-to-text also depends on the browser's speech-recognition implementation
+and may need an internet connection. Allow microphone access for the app, try a
+supported current browser such as Chrome or Edge, and use the call overlay's
+text field if recognition is unavailable. The typed chat input does not depend
+on browser speech recognition.
+
+## Knowledge backup and Google Drive sync
+
+**Google Drive sync is not available in Settings.**
+Set `SECBRAIN_GOOGLE_DRIVE_CLIENT_ID` and
+`SECBRAIN_GOOGLE_DRIVE_CLIENT_SECRET` in the backend environment and restart
+the backend. Complete the Google OAuth consent flow in Settings. Drive sync
+stores the extracted knowledge pool and metadata; it does not upload source
+PDFs, conversation history, account credentials, or model settings.
+
+**Moving the library between PCs.**
+Export the knowledge ZIP from Settings, copy it through your own Drive folder,
+then restore it from Settings on the other PC. The new installation rebuilds
+its local search index from extracted text. This does not move users, chats, API
+keys, secrets, or model configuration.
 
 ---
 

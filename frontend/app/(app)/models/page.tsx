@@ -66,9 +66,9 @@ export default function ModelsPage() {
 
 function Row({ k, v }: { k: string; v: React.ReactNode }) {
   return (
-    <div className="flex items-center justify-between gap-4">
-      <dt className="text-muted">{k}</dt>
-      <dd className="text-right text-fg">{v}</dd>
+    <div className="flex items-start justify-between gap-3">
+      <dt className="shrink-0 text-muted">{k}</dt>
+      <dd className="min-w-0 break-words text-right text-fg">{v}</dd>
     </div>
   );
 }

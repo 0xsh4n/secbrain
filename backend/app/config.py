@@ -39,6 +39,12 @@ class Settings(BaseSettings):
     # --- Storage ---
     storage_dir: str = "./data/storage"
 
+    # --- Optional Google Drive knowledge-pool sync ---
+    google_drive_client_id: str = ""
+    google_drive_client_secret: str = ""
+    google_drive_redirect_uri: str = "http://localhost:8000/api/v1/drive-sync/callback"
+    google_drive_frontend_url: str = "http://localhost:3000"
+
     # --- Embeddings provider ---
     # fake | ollama | openai
     embedding_provider: str = "fake"
@@ -54,7 +60,7 @@ class Settings(BaseSettings):
     llm_base_url: str = "http://localhost:11434"
     llm_api_key: str = ""
     llm_context_tokens: int = 8192
-    llm_max_output_tokens: int = 1024
+    llm_max_output_tokens: int = 4096
     llm_temperature: float = 0.1
     llm_timeout_seconds: float = 120.0
     llm_max_concurrency: int = 2
@@ -80,6 +86,7 @@ class Settings(BaseSettings):
     retrieval_min_lexical: float = 0.30
     retrieval_min_cosine: float = 0.30
     retrieval_candidate_multiplier: int = 4  # over-fetch before fusion
+    retrieval_max_scan_chunks: int = 5000  # bound per-query memory for local deployments
     chunk_target_tokens: int = 350
     chunk_overlap_tokens: int = 60
 

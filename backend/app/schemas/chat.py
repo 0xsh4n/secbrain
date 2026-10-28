@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 from app.schemas.search import EvidenceOut
@@ -23,6 +25,9 @@ class ChatRequest(BaseModel):
     collection_ids: list[str] = Field(default_factory=list)
     top_k: int = Field(default=8, ge=1, le=50)
     rerank: bool = False
+    response_length: Literal["balanced", "detailed", "extended"] = "extended"
+    thinking: bool = False
+    web_search: bool = False
 
 
 class MessageOut(BaseModel):

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import re
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
@@ -20,9 +22,39 @@ from app.schemas.common import iso
 from app.schemas.search import EvidenceOut
 from app.services.answer import generate_answer
 from app.services.llm import get_llm_provider
-from app.services.retrieval import RetrievalParams, retrieve
+from app.services.retrieval import Evidence, RetrievalParams, retrieve
+from app.services.web_search import search_web
+from app.config import settings
 
 router = APIRouter(prefix="/conversations", tags=["chat"])
+_OUTPUT_TOKENS = {"balanced": 1024, "detailed": 2048, "extended": 4096}
+
+
+def _answer_budget(payload: ChatRequest) -> int:
+    return min(_OUTPUT_TOKENS[payload.response_length], settings.llm_max_output_tokens)
+
+
+def _web_evidence(query: str) -> list[Evidence]:
+    try:
+        results = search_web(query)
+    except Exception:
+        return []
+    return [
+        Evidence(
+            document_id="",
+            chunk_id=f"web-{index}-{hashlib.sha256(result.url.encode()).hexdigest()[:12]}",
+            title=result.title,
+            source_url=result.url,
+            source_type="web",
+            text=result.snippet,
+            page_number=None,
+            section_heading="",
+            retrieval_method="web search",
+            score=1.0,
+            collection_ids=[],
+        )
+        for index, result in enumerate(results, start=1)
+    ]
 
 
 def _conv_out(c: Conversation) -> ConversationOut:
@@ -90,7 +122,26 @@ def delete_conversation(conv_id: str, db: Session = Depends(get_db), principal: 
     db.commit()
 
 
+_CONVERSATIONAL_WORDS = {
+    "hi", "hello", "hey", "sup", "yo", "thanks", "thank", "thank you",
+    "how are you", "who are you", "good morning", "good evening", "good afternoon",
+    "what's up", "whats up", "ok", "okay", "bye", "goodbye"
+}
+
+def _is_conversational(text: str) -> bool:
+    clean = re.sub(r"[^\w\s]", "", text.strip().lower()).strip()
+    if clean in _CONVERSATIONAL_WORDS:
+        return True
+    words = clean.split()
+    if len(words) <= 4 and any(w in {"hi", "hello", "hey", "sup", "greetings"} for w in words):
+        security_keywords = {"cve", "cwe", "vuln", "vulnerability", "exploit", "audit", "security", "scan", "token", "password", "port"}
+        if not any(k in words for k in security_keywords):
+            return True
+    return False
+
 def _run_retrieval(db: Session, principal: Principal, c: Conversation, payload: ChatRequest):
+    if _is_conversational(payload.message):
+        return []
     requested = payload.collection_ids or json.loads(c.collection_ids or "[]")
     params = RetrievalParams(
         query=payload.message,
@@ -109,13 +160,16 @@ def post_message(
     principal: Principal = Depends(require_session),
 ):
     c = _get_conv(db, principal, conv_id)
-    history = [
-        {"role": m.role, "content": m.content}
-        for m in c.messages[-6:]
-    ]
+    history_rows = db.execute(
+        select(Message).where(Message.conversation_id == c.id)
+        .order_by(Message.created_at.desc()).limit(6)
+    ).scalars().all()
+    history = [{"role": m.role, "content": m.content} for m in reversed(history_rows)]
     db.add(Message(conversation_id=c.id, role="user", content=payload.message))
     evidence = _run_retrieval(db, principal, c, payload)
-    result = generate_answer(payload.message, evidence, history=history)
+    if payload.web_search:
+        evidence.extend(_web_evidence(payload.message))
+    result = generate_answer(payload.message, evidence, history=history, max_output_tokens=_answer_budget(payload), thinking=payload.thinking)
 
     if not result.model_available:
         # Persist the user message; surface a clear model-unavailable error.
@@ -144,23 +198,27 @@ def stream_message(
 ):
     """Server-sent-events style stream: evidence first, then answer tokens."""
     c = _get_conv(db, principal, conv_id)
-    history = [
-        {"role": m.role, "content": m.content}
-        for m in c.messages[-6:]
-    ]
+    history_rows = db.execute(
+        select(Message).where(Message.conversation_id == c.id)
+        .order_by(Message.created_at.desc()).limit(6)
+    ).scalars().all()
+    history = [{"role": m.role, "content": m.content} for m in reversed(history_rows)]
     db.add(Message(conversation_id=c.id, role="user", content=payload.message))
     db.commit()
     evidence = _run_retrieval(db, principal, c, payload)
     message = payload.message
+    conversation_id = c.id
+    # Do not hold a database connection open while a long model stream runs.
+    db.close()
 
     def event_gen():
-        yield "event: evidence\ndata: " + json.dumps([e.to_dict() for e in evidence]) + "\n\n"
-        if not evidence:
-            res = generate_answer(message, evidence, history=history)
-            yield "event: token\ndata: " + json.dumps({"text": res.answer}) + "\n\n"
-            _persist_assistant(conv_id, res.answer, evidence)
-            yield "event: done\ndata: {}\n\n"
-            return
+        stream_evidence = list(evidence)
+        if payload.web_search:
+            yield "event: status\ndata: " + json.dumps({"text": "Searching the web…"}) + "\n\n"
+            web_items = _web_evidence(message)
+            stream_evidence.extend(web_items)
+            if not web_items:
+                yield "event: notice\ndata: " + json.dumps({"text": "Web search returned no results; answering from your knowledge pool and model knowledge."}) + "\n\n"
         provider = get_llm_provider()
         from app.services.answer import _SYSTEM_PROMPT, _build_evidence_block
 
@@ -172,19 +230,36 @@ def stream_message(
             ]
             history_block = "PRIOR CONVERSATION CONTEXT:\n" + "\n".join(turns) + "\n\n"
 
-        user_prompt = (
-            f"{history_block}CURRENT QUESTION: {message}\n\n{_build_evidence_block(evidence)}\n\n"
-            "Answer grounded in the evidence, citing labels like [E1]."
-        )
+        if stream_evidence:
+            evidence_section = (
+                f"{_build_evidence_block(stream_evidence)}\n\n"
+                "Answer using the evidence above as background context. Do not print evidence labels or quote large passages. "
+                "If code or scripts are requested, provide clean, complete implementations."
+            )
+        else:
+            evidence_section = (
+                "Note: No specific documents were retrieved from the knowledge base for this query. "
+                "Answer using your expert cybersecurity domain knowledge. Provide complete code, scripts, or methodologies as requested."
+            )
+
+        user_prompt = f"{history_block}CURRENT QUESTION: {message}\n\n{evidence_section}"
+        length_guidance = {
+            "balanced": "Use a compact answer, but still answer every numbered item.",
+            "detailed": "Give a detailed answer while keeping each sub-answer focused.",
+            "extended": "Use the full response budget. First count every requested question or list item, preserve their order and numbering, and answer each one. For 10 or more items, keep each answer concise enough to complete the entire list. Do not omit later items for a long introduction.",
+        }[payload.response_length]
+        user_prompt += f"\n\nRESPONSE INSTRUCTIONS: {length_guidance}"
+        if payload.thinking:
+            user_prompt += " Carefully verify assumptions and reason through the requested parts before answering. Provide conclusions and a brief rationale, but do not reveal private chain-of-thought."
         collected: list[str] = []
         try:
-            for piece in provider.stream(_SYSTEM_PROMPT, user_prompt):
+            for piece in provider.stream(_SYSTEM_PROMPT, user_prompt, max_output_tokens=_answer_budget(payload), thinking=payload.thinking):
                 collected.append(piece)
                 yield "event: token\ndata: " + json.dumps({"text": piece}) + "\n\n"
         except Exception as exc:
             yield "event: error\ndata: " + json.dumps({"detail": str(exc)}) + "\n\n"
             return
-        _persist_assistant(conv_id, "".join(collected), evidence)
+        _persist_assistant(conversation_id, "".join(collected), stream_evidence)
         yield "event: done\ndata: {}\n\n"
 
     return StreamingResponse(event_gen(), media_type="text/event-stream")

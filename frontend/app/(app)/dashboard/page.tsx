@@ -28,7 +28,17 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-xl font-semibold">Knowledge Dashboard</h1>
+      <div className="flex flex-col gap-4 rounded-2xl border border-accent/15 bg-gradient-to-br from-accent/10 via-surface/90 to-surface/70 p-4 sm:flex-row sm:items-center sm:justify-between sm:p-6">
+        <div>
+          <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-accent">Your workspace</p>
+          <h1 className="mt-1 text-xl font-semibold sm:text-2xl">Knowledge Dashboard</h1>
+          <p className="mt-1 max-w-xl text-sm text-muted">Your indexed security knowledge, model health, and recent activity in one place.</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Link href="/chat" className="rounded-xl border border-border bg-surface px-4 py-2.5 text-sm text-fg transition hover:border-accent/40 hover:text-accent">Open chat</Link>
+          <Link href="/ingest" className="rounded-xl bg-accent-dim px-4 py-2.5 text-sm font-medium text-black transition hover:bg-accent">Add knowledge</Link>
+        </div>
+      </div>
 
       <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
         <Stat label="Indexed Documents" value={stats.total_documents} />
