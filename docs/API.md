@@ -120,6 +120,52 @@ Response distinguishes a supported answer from insufficient evidence:
 If no generation model is available, `model.available` is `false` and
 `model_error` explains why — retrieval/evidence still work.
 
+
+## Chat & Conversations (Multi-turn)
+
+SecBrain supports persistent, multi-turn conversations scoped to user collections.
+Each conversation retains its message history, and subsequent queries include
+recent turns as conversational context.
+
+### List user conversations
+``bash
+curl -s localhost:8000/api/v1/conversations \
+  -H "authorization: Bearer $TOKEN"
+``
+
+### Create a new conversation
+``bash
+curl -s -X POST localhost:8000/api/v1/conversations \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{\"title\":\"Log4j Mitigation Investigation\",\"collection_ids\":[]}'
+``
+
+### Post a message (with conversational memory)
+``bash
+curl -s -X POST localhost:8000/api/v1/conversations/{conv_id}/messages \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{\"message\":\"What are the mitigation steps for this vulnerability?\",\"top_k\":4}'
+``
+
+### Stream a response (Server-Sent Events)
+``bash
+curl -N -X POST localhost:8000/api/v1/conversations/{conv_id}/stream \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{\"message\":\"Summarize the key takeaways\"}'
+``
+
+### Retrieve message history
+``bash
+curl -s localhost:8000/api/v1/conversations/{conv_id}/messages \
+  -H "authorization: Bearer $TOKEN"
+``
+
+### Delete a conversation
+``bash
+curl -s -X DELETE localhost:8000/api/v1/conversations/{conv_id} \
+  -H "authorization: Bearer $TOKEN"
+``
+
 ## Pagination & limits
 
 `GET /documents` accepts `limit` (1–100), `offset`, `status`, `source_type`,

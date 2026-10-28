@@ -106,9 +106,10 @@ Default bootstrap admin: `admin@secbrain.local` / `changeme-admin-123`
    `PENDING → FETCHING → EXTRACTING → INDEXING → COMPLETED`.
 2. **Search** — Search page: hybrid retrieval returns evidence passages with
    source metadata, score, and the retrieval method used.
-3. **Chat** — Knowledge Chat: ask grounded questions; answers cite the evidence
-   used and link back to the source documents. Clear error if no model is
-   configured.
+3. **Chat** — Knowledge Chat: multi-turn conversation history sidebar, persistent
+   threads, and grounded question-answering with conversational memory. Answers cite
+   the evidence used and link back to the source documents. Clear error if no model
+   is configured.
 4. **API keys** — create a scoped, rate-limited key (shown once) for external AI
    apps and the MCP adapter.
 
@@ -134,8 +135,10 @@ More examples (including API-key and MCP usage) in [docs/API.md](docs/API.md).
 ## Configure a local model (optional)
 
 SecBrain runs fully offline by default. To get natural-language generation and
-semantic embeddings, point it at **Ollama** or any **OpenAI-compatible**
-endpoint — **no source changes required**, only environment variables. See
+semantic embeddings, point it at **Ollama** (e.g. running on host with http://host.docker.internal:11434)
+or any **OpenAI-compatible** endpoint — **no source changes required**, only environment
+variables. Tested models include qwen2.5:3b, llama3.2:3b, and 
+omic-embed-text. See
 [docs/LOCAL_MODELS.md](docs/LOCAL_MODELS.md).
 
 ---
