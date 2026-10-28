@@ -1,0 +1,86 @@
+# SecBrain local deployment.
+#
+#   cp .env.example .env     # review and adjust secrets
+#   docker compose up --build
+#
+# Services:
+#   db       - PostgreSQL (metadata, documents, chunks, API keys, audit)
+#   qdrant   - optional vector store (set SECBRAIN_VECTOR_STORE=qdrant to use)
+#   backend  - FastAPI API (migrations + bootstrap run on start)
+#   frontend - Next.js web UI
+#   ollama   - optional local model runtime (profile: models)
+#
+# The default config uses the in-process numpy vector store and the offline
+# deterministic model providers, so SecBrain runs with just db+backend+frontend.
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-secbrain}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-secbrain}
+      POSTGRES_DB: ${POSTGRES_DB:-secbrain}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-secbrain}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  qdrant:
+    image: qdrant/qdrant:v1.12.4
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrantdata:/qdrant/storage
+    profiles: ["qdrant"]
+
+  backend:
+    build: ./backend
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      SECBRAIN_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-secbrain}:${POSTGRES_PASSWORD:-secbrain}@db:5432/${POSTGRES_DB:-secbrain}
+      SECBRAIN_SECRET_KEY: ${SECBRAIN_SECRET_KEY:-change-me-in-production-min-32-bytes-long}
+      SECBRAIN_CORS_ORIGINS: ${SECBRAIN_CORS_ORIGINS:-http://localhost:3000}
+      SECBRAIN_VECTOR_STORE: ${SECBRAIN_VECTOR_STORE:-memory}
+      SECBRAIN_QDRANT_URL: http://qdrant:6333
+      SECBRAIN_EMBEDDING_PROVIDER: ${SECBRAIN_EMBEDDING_PROVIDER:-fake}
+      SECBRAIN_LLM_PROVIDER: ${SECBRAIN_LLM_PROVIDER:-fake}
+      SECBRAIN_LLM_BASE_URL: ${SECBRAIN_LLM_BASE_URL:-http://ollama:11434}
+      SECBRAIN_EMBEDDING_BASE_URL: ${SECBRAIN_EMBEDDING_BASE_URL:-http://ollama:11434}
+      SECBRAIN_BOOTSTRAP_ADMIN_EMAIL: ${SECBRAIN_BOOTSTRAP_ADMIN_EMAIL:-admin@secbrain.local}
+      SECBRAIN_BOOTSTRAP_ADMIN_PASSWORD: ${SECBRAIN_BOOTSTRAP_ADMIN_PASSWORD:-changeme-admin-123}
+      SECBRAIN_SEED_SAMPLES_ON_START: ${SECBRAIN_SEED_SAMPLES_ON_START:-false}
+    volumes:
+      - storage:/app/data/storage
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    depends_on:
+      - backend
+    ports:
+      - "3000:3000"
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollamadata:/root/.ollama
+    profiles: ["models"]
+
+volumes:
+  pgdata:
+  qdrantdata:
+  storage:
+  ollamadata:
