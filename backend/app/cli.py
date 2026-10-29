@@ -76,6 +76,25 @@ def seed_samples() -> None:
     print(f"[seed-samples] ingested {count} sample documents")
 
 
+def download_voice() -> None:
+    """Download the Piper voice model used by the Nyx TTS voice."""
+    import os
+    import subprocess
+
+    voice_id = os.environ.get("SECBRAIN_PIPER_VOICE_ID", "en_US-amy-medium")
+    data_dir = os.path.dirname(os.path.abspath(settings.piper_voice_path)) or "./data/voices"
+    os.makedirs(data_dir, exist_ok=True)
+    if os.path.exists(settings.piper_voice_path):
+        print(f"[download-voice] already present: {settings.piper_voice_path}")
+        return
+    print(f"[download-voice] downloading {voice_id} -> {data_dir}")
+    subprocess.run(
+        [sys.executable, "-m", "piper.download_voices", voice_id, "--data-dir", data_dir],
+        check=True,
+    )
+    print("[download-voice] done")
+
+
 def main() -> None:
     if len(sys.argv) < 2:
         print(__doc__)
@@ -88,6 +107,8 @@ def main() -> None:
         bootstrap()
     elif cmd == "seed-samples":
         seed_samples()
+    elif cmd == "download-voice":
+        download_voice()
     else:
         print(f"Unknown command: {cmd}")
         print(__doc__)

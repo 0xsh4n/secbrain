@@ -50,6 +50,10 @@ services:
       SECBRAIN_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-secbrain}:${POSTGRES_PASSWORD:-secbrain}@db:5432/${POSTGRES_DB:-secbrain}
       SECBRAIN_SECRET_KEY: ${SECBRAIN_SECRET_KEY:-change-me-in-production-min-32-bytes-long}
       SECBRAIN_CORS_ORIGINS: ${SECBRAIN_CORS_ORIGINS:-http://localhost:3000}
+      # Self-hosted: allow any browser origin (Bearer-header auth, no cookies),
+      # so the UI works when opened from another device. Set false + list exact
+      # origins in SECBRAIN_CORS_ORIGINS to lock it down.
+      SECBRAIN_CORS_ALLOW_ALL: ${SECBRAIN_CORS_ALLOW_ALL:-true}
       SECBRAIN_VECTOR_STORE: ${SECBRAIN_VECTOR_STORE:-memory}
       SECBRAIN_QDRANT_URL: http://qdrant:6333
       SECBRAIN_EMBEDDING_PROVIDER: ${SECBRAIN_EMBEDDING_PROVIDER:-fake}
@@ -66,8 +70,15 @@ services:
       SECBRAIN_BOOTSTRAP_ADMIN_EMAIL: ${SECBRAIN_BOOTSTRAP_ADMIN_EMAIL:-admin@secbrain.local}
       SECBRAIN_BOOTSTRAP_ADMIN_PASSWORD: ${SECBRAIN_BOOTSTRAP_ADMIN_PASSWORD:-changeme-admin-123}
       SECBRAIN_SEED_SAMPLES_ON_START: ${SECBRAIN_SEED_SAMPLES_ON_START:-false}
+      # Nyx voice (Piper). The model is downloaded on first start (see entrypoint).
+      SECBRAIN_TTS_PROVIDER: ${SECBRAIN_TTS_PROVIDER:-piper}
+      # System actions (nmap / app launch) — OFF by default; fail closed.
+      SECBRAIN_ACTIONS_ENABLED: ${SECBRAIN_ACTIONS_ENABLED:-false}
+      SECBRAIN_ALLOWED_APPS: ${SECBRAIN_ALLOWED_APPS:-{}}
+      SECBRAIN_ACTION_SCOPE_ALLOWLIST: ${SECBRAIN_ACTION_SCOPE_ALLOWLIST:-[]}
     volumes:
       - storage:/app/data/storage
+      - voices:/app/data/voices
     ports:
       - "8000:8000"
 
@@ -75,7 +86,11 @@ services:
     build:
       context: ./frontend
       args:
-        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+        # Empty => the browser derives the API from the host it's opened on
+        # (http://<host>:3000 -> http://<host>:8000). Set a fixed public URL or
+        # "same-origin" (behind a reverse proxy) to override.
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-}
+        NEXT_PUBLIC_API_PORT: ${NEXT_PUBLIC_API_PORT:-8000}
     depends_on:
       - backend
     ports:
@@ -93,4 +108,5 @@ volumes:
   pgdata:
   qdrantdata:
   storage:
+  voices:
   ollamadata:

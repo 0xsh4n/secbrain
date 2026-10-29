@@ -121,7 +121,11 @@ def generate_answer(
     return AnswerResult(
         answer=answer_text,
         evidence=evidence,
-        insufficient_evidence=False,
+        # The answer is still produced (from general model knowledge when the
+        # knowledge base returned nothing), but this flag truthfully reports
+        # whether it is grounded in retrieved evidence, so callers/UI can mark
+        # ungrounded answers and the abstention contract/eval stays meaningful.
+        insufficient_evidence=not evidence,
         cited_labels=cited,
         model_name=model_name,
         model_available=True,

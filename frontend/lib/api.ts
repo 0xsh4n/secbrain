@@ -1,5 +1,37 @@
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 const TOKEN_KEY = "secbrain_token";
+
+/**
+ * Resolve the API base URL **at runtime** (in the browser), so the app works
+ * when opened from another device without rebuilding.
+ *
+ * Resolution order:
+ *  1. NEXT_PUBLIC_API_URL="same-origin"  -> "" (relative): the UI and API are
+ *     served from one origin (e.g. behind a reverse proxy / tunnel). No CORS.
+ *  2. NEXT_PUBLIC_API_URL set to a real absolute URL (not localhost) -> use it.
+ *  3. Otherwise (unset, or the localhost default): derive from the browser's
+ *     current host, using NEXT_PUBLIC_API_PORT (default 8000). So opening
+ *     http://<server-ip-or-host>:3000 makes the API target
+ *     http://<server-ip-or-host>:8000 automatically.
+ */
+export function apiBase(): string {
+  const configured = (process.env.NEXT_PUBLIC_API_URL || "").trim();
+
+  if (configured === "same-origin") return "";
+
+  const isLocalhost = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\/?$/i.test(configured);
+  if (configured && !isLocalhost) return configured.replace(/\/$/, "");
+
+  // Derive from the current browser host (handles LAN IPs, hostnames, tunnels
+  // where both ports are reachable).
+  if (typeof window !== "undefined") {
+    const port = (process.env.NEXT_PUBLIC_API_PORT || "8000").trim();
+    const host = window.location.hostname;
+    return port ? `${window.location.protocol}//${host}:${port}` : `${window.location.protocol}//${host}`;
+  }
+
+  // Server-side fallback (SSR/prerender): only used if ever called off-browser.
+  return configured || "http://localhost:8000";
+}
 
 export class ApiError extends Error {
   status: number;
@@ -50,14 +82,15 @@ export async function api<T>(path: string, opts: RequestOptions = {}): Promise<T
       payload = JSON.stringify(body);
     }
   }
+  const base = apiBase();
   let res: Response;
   try {
-    res = await fetch(`${API_URL}/api/v1${path}`, { method, headers, body: payload });
+    res = await fetch(`${base}/api/v1${path}`, { method, headers, body: payload });
   } catch (error) {
     const reason = error instanceof Error ? error.message : "Network request failed";
     throw new ApiError(
       0,
-      `Cannot reach SecBrain API at ${API_URL}. Check that the backend is running and NEXT_PUBLIC_API_URL points to it. (${reason})`
+      `Cannot reach SecBrain API at ${base || "this site's origin"}. Check that the backend is reachable from your device (and NEXT_PUBLIC_API_URL / CORS if set). (${reason})`
     );
   }
   if (res.status === 204) return undefined as T;
@@ -78,4 +111,3 @@ export async function api<T>(path: string, opts: RequestOptions = {}): Promise<T
   return data as T;
 }
 
-export const apiUrl = API_URL;

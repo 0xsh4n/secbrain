@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, apiUrl, getToken } from "@/lib/api";
+import { api, apiBase, getToken } from "@/lib/api";
 import type { CollectionOut, JobOut } from "@/lib/types";
 import { Card, CardHeader, Button, Input, Textarea, Select, Badge, Empty, ErrorNote } from "@/components/ui";
 
@@ -49,7 +49,7 @@ export default function IngestPage() {
         form.append("file", file);
         form.append("title", title);
         form.append("collection_ids", collection_ids.join(","));
-        const res = await fetch(`${apiUrl}/api/v1/documents/upload`, {
+        const res = await fetch(`${apiBase()}/api/v1/documents/upload`, {
           method: "POST",
           headers: { Authorization: `Bearer ${getToken()}` },
           body: form,

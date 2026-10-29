@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { getProcessedMicrophone, playCallConnectSound, playCallDisconnectSound, speakHackerGirl, stopSpeaking, StreamingSpeech } from "@/lib/voice";
+import { getProcessedMicrophone, playCallConnectSound, playCallDisconnectSound, speakNyx, stopSpeaking, StreamingSpeech } from "@/lib/voice";
 
 interface VoiceCallOverlayProps {
   isOpen: boolean;
@@ -60,7 +60,7 @@ export function VoiceCallOverlay({ isOpen, onClose, onSendMessage }: VoiceCallOv
     mutedRef.current = false;
     setCallDuration(0);
     setUserTranscript("");
-    setAiTranscript("Establishing secure telemetry link...");
+    setAiTranscript("Connecting to Nyx…");
     setErrorMessage("");
 
     playCallConnectSound();
@@ -101,10 +101,11 @@ export function VoiceCallOverlay({ isOpen, onClose, onSendMessage }: VoiceCallOv
 
       if (!isCallActiveRef.current) return;
       updateCallState("speaking");
-      setAiTranscript("SecBrain tactical link established. Operator Nyx online. What's our target?");
-      
+      const greeting = "Hey, I'm Nyx. I'm listening — what can I help you with?";
+      setAiTranscript(greeting);
+
       // Initial greeting voice
-      speakHackerGirl("SecBrain tactical link established. Operator Nyx online. What's our target?", () => {
+      speakNyx(greeting, () => {
         if (isCallActiveRef.current) {
           startListeningLoop();
         }
@@ -208,7 +209,7 @@ export function VoiceCallOverlay({ isOpen, onClose, onSendMessage }: VoiceCallOv
     }
 
     updateCallState("thinking");
-    setAiTranscript("Analyzing threat intelligence and synthesizing response...");
+    setAiTranscript("Thinking…");
 
     try {
       let streamedResponse = "";
@@ -353,10 +354,10 @@ export function VoiceCallOverlay({ isOpen, onClose, onSendMessage }: VoiceCallOv
           </div>
           <div>
             <div className="truncate font-mono text-[10px] font-semibold uppercase tracking-widest text-accent sm:text-xs">
-              SECURE AUDIO UPLINK // CHANNEL-01
+              LIVE VOICE • NYX
             </div>
             <div className="text-[10px] text-muted">
-              OPERATOR NYX • BROWSER SPEECH + SECBRAIN API
+              NYX • NEURAL VOICE + SECBRAIN
             </div>
           </div>
         </div>
@@ -397,17 +398,17 @@ export function VoiceCallOverlay({ isOpen, onClose, onSendMessage }: VoiceCallOv
         {/* State Indicator */}
         <div className="space-y-1">
           <div className="font-mono text-xs uppercase tracking-widest text-accent font-semibold">
-            {callState === "connecting" && "ESTABLISHING CIPHER LINK..."}
-            {callState === "listening" && "🟢 OPERATOR LISTENING (SPEAK FREELY)"}
-            {callState === "thinking" && "⚡ ANALYZING THREAT DATABASE..."}
-            {callState === "speaking" && "🔊 OPERATOR TRANSMITTING"}
+            {callState === "connecting" && "CONNECTING TO NYX…"}
+            {callState === "listening" && "🟢 NYX IS LISTENING"}
+            {callState === "thinking" && "⚡ THINKING…"}
+            {callState === "speaking" && "🔊 NYX IS SPEAKING"}
           </div>
           <div className="text-xs text-muted">
             {callState === "listening"
               ? "Speak naturally; Nyx will reply when you finish"
               : callState === "speaking"
               ? "Nyx is replying"
-              : "Connecting to SecBrain..."}
+              : "Connecting…"}
           </div>
         </div>
 
@@ -419,7 +420,7 @@ export function VoiceCallOverlay({ isOpen, onClose, onSendMessage }: VoiceCallOv
         {/* Live Subtitles / Transcripts */}
         <div className="max-h-36 w-full min-h-[5.5rem] overflow-y-auto rounded-2xl border border-border/60 bg-surface/80 p-3 text-left shadow-inner sm:max-h-48 sm:p-4">
           <div className="text-[10px] uppercase tracking-wider text-muted font-mono mb-1">
-            Live Transmission Transcript:
+            Live transcript
           </div>
           {userTranscript && (
             <p className="text-xs text-muted mb-1.5">
@@ -431,7 +432,7 @@ export function VoiceCallOverlay({ isOpen, onClose, onSendMessage }: VoiceCallOv
               <span className="text-accent font-mono font-semibold">Nyx:</span> {aiTranscript}
             </p>
           ) : (
-            <p className="text-xs italic text-muted">Waiting for audio transmission...</p>
+            <p className="text-xs italic text-muted">Waiting…</p>
           )}
         </div>
 
@@ -507,7 +508,7 @@ export function VoiceCallOverlay({ isOpen, onClose, onSendMessage }: VoiceCallOv
             className="flex items-center gap-2 rounded-full bg-danger px-4 py-3 font-mono text-[10px] font-bold text-white shadow-[0_0_20px_rgba(239,68,68,0.5)] transition-all hover:bg-danger/80 sm:px-6 sm:text-xs"
           >
             <span className="text-base">📞</span>
-            <span className="sm:hidden">END</span><span className="hidden sm:inline">END TRANSMISSION</span>
+            <span className="sm:hidden">END</span><span className="hidden sm:inline">END CALL</span>
           </button>
 
           {/* Push to talk / Re-listen trigger */}

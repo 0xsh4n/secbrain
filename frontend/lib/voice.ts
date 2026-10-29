@@ -1,9 +1,14 @@
 "use client";
 
 /**
- * Cyberpunk Hacker Girl Voice & Audio Synthesizer
- * Uses native Web Speech API and Web Audio API (zero extra dependencies).
+ * Nyx voice & audio.
+ *
+ * Primary TTS is the backend **Piper** neural voice (warm, human-like, runs on
+ * the server CPU, offline). If the backend voice is unavailable, we fall back to
+ * the browser's built-in speech synthesis so voice still works everywhere.
  */
+
+import { apiBase, getToken } from "./api";
 
 function getAudioContext(): AudioContext | null {
   if (typeof window === "undefined") return null;
@@ -24,22 +29,17 @@ export function playCyberBeep() {
   try {
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
-
     osc.type = "sine";
-    // 2-tone frequency sweep: 880Hz -> 1760Hz in 80ms (sci-fi terminal chirp)
     osc.frequency.setValueAtTime(880, ctx.currentTime);
     osc.frequency.exponentialRampToValueAtTime(1760, ctx.currentTime + 0.08);
-
     gain.gain.setValueAtTime(0.08, ctx.currentTime);
     gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.08);
-
     osc.connect(gain);
     gain.connect(ctx.destination);
-
     osc.start();
     osc.stop(ctx.currentTime + 0.08);
   } catch {
-    // AudioContext might be muted until user interaction
+    /* AudioContext might be muted until user interaction */
   }
 }
 
@@ -47,7 +47,6 @@ export function playCallConnectSound() {
   const ctx = getAudioContext();
   if (!ctx) return;
   try {
-    // Sci-fi uplink sound: 3 quick ascending tones
     const now = ctx.currentTime;
     [520, 660, 880].forEach((freq, i) => {
       const osc = ctx.createOscillator();
@@ -62,7 +61,7 @@ export function playCallConnectSound() {
       osc.stop(now + i * 0.07 + 0.06);
     });
   } catch {
-    // ignore
+    /* ignore */
   }
 }
 
@@ -70,7 +69,6 @@ export function playCallDisconnectSound() {
   const ctx = getAudioContext();
   if (!ctx) return;
   try {
-    // 2 descending tones
     const now = ctx.currentTime;
     [880, 440].forEach((freq, i) => {
       const osc = ctx.createOscillator();
@@ -85,21 +83,14 @@ export function playCallDisconnectSound() {
       osc.stop(now + i * 0.08 + 0.07);
     });
   } catch {
-    // ignore
+    /* ignore */
   }
 }
 
-/**
- * Clean markdown and code blocks so speech is natural and pleasant
- */
+/** Clean markdown and code blocks so speech is natural and pleasant. */
 export function cleanTextForSpeech(text: string): string {
-  let cleaned = text;
-
-  // Replace code blocks with a polite verbal notice
-  cleaned = cleaned.replace(/```[\s\S]*?```/g, " Code is displayed in the chat. ");
-
-  // Remove markdown headers, bold, italics, inline code, and URLs
-  cleaned = cleaned
+  return text
+    .replace(/```[\s\S]*?```/g, " Code is shown in the chat. ")
     .replace(/^#+\s+/gm, "")
     .replace(/\*\*(.*?)\*\*/g, "$1")
     .replace(/\*(.*?)\*/g, "$1")
@@ -109,74 +100,111 @@ export function cleanTextForSpeech(text: string): string {
     .replace(/[-*]\s+/g, "")
     .replace(/\n+/g, " ")
     .trim();
-
-  return cleaned;
 }
 
-/**
- * Speak using the female hacker voice profile
- */
-export function speakHackerGirl(text: string, onEnd?: () => void) {
-  if (typeof window === "undefined" || !("speechSynthesis" in window)) {
-    if (onEnd) onEnd();
-    return;
+// --- Backend (Piper) TTS ----------------------------------------------------
+let backendTtsAvailable: boolean | null = null; // null = unknown, re-probe
+let currentAudio: HTMLAudioElement | null = null;
+
+async function fetchNyxAudio(text: string): Promise<Blob | null> {
+  if (backendTtsAvailable === false) return null;
+  const clean = cleanTextForSpeech(text);
+  if (!clean) return null;
+  const token = getToken();
+  if (!token) return null;
+  try {
+    const res = await fetch(`${apiBase()}/api/v1/voice/tts`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ text: clean }),
+    });
+    if (res.status === 503) {
+      backendTtsAvailable = false; // voice not installed; stop probing this session
+      return null;
+    }
+    if (!res.ok) return null;
+    backendTtsAvailable = true;
+    return await res.blob();
+  } catch {
+    return null;
   }
-
-  // Cancel any ongoing speech
-  window.speechSynthesis.cancel();
-
-  const spokenText = cleanTextForSpeech(text);
-  if (!spokenText) {
-    if (onEnd) onEnd();
-    return;
-  }
-
-  const utterance = new SpeechSynthesisUtterance(spokenText);
-
-  // Find best available female English voice
-  const voices = window.speechSynthesis.getVoices();
-  const femaleVoice =
-    voices.find(
-      (v) =>
-        v.lang.startsWith("en") &&
-        (v.name.includes("Zira") ||
-          v.name.includes("Samantha") ||
-          v.name.includes("Jenny") ||
-          v.name.includes("Victoria") ||
-          v.name.includes("Karen") ||
-          v.name.includes("Female") ||
-          v.name.includes("Google UK English Female") ||
-          v.name.includes("Google US English"))
-    ) ||
-    voices.find((v) => v.lang.startsWith("en")) ||
-    voices[0];
-
-  if (femaleVoice) {
-    utterance.voice = femaleVoice;
-  }
-
-  // Keep the voice close to normal conversational pacing.
-  utterance.pitch = 1.08;
-  utterance.rate = 0.98;
-
-  if (onEnd) {
-    utterance.onend = () => onEnd();
-    utterance.onerror = () => onEnd();
-  }
-
-  window.speechSynthesis.speak(utterance);
 }
 
-/** Speaks complete sentences as they arrive from a streamed answer. */
+function playBlob(blob: Blob): Promise<void> {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(blob);
+    const audio = new Audio(url);
+    currentAudio = audio;
+    const done = () => {
+      URL.revokeObjectURL(url);
+      if (currentAudio === audio) currentAudio = null;
+      resolve();
+    };
+    audio.onended = done;
+    audio.onerror = done;
+    audio.play().catch(done);
+  });
+}
+
+function speakBrowser(text: string): Promise<void> {
+  return new Promise((resolve) => {
+    if (typeof window === "undefined" || !("speechSynthesis" in window)) {
+      resolve();
+      return;
+    }
+    const spoken = cleanTextForSpeech(text);
+    if (!spoken) {
+      resolve();
+      return;
+    }
+    const utterance = new SpeechSynthesisUtterance(spoken);
+    const voices = window.speechSynthesis.getVoices();
+    utterance.voice =
+      voices.find(
+        (v) => v.lang.startsWith("en") && /jenny|aria|samantha|female|google us english/i.test(v.name)
+      ) ||
+      voices.find((v) => v.lang.startsWith("en")) ||
+      voices[0] ||
+      null;
+    utterance.pitch = 1.05;
+    utterance.rate = 1.0;
+    utterance.onend = () => resolve();
+    utterance.onerror = () => resolve();
+    window.speechSynthesis.speak(utterance);
+  });
+}
+
+/** Speak one piece of text as Nyx (Piper, with browser fallback). */
+export async function speakNyx(text: string, onEnd?: () => void) {
+  stopSpeaking();
+  const blob = await fetchNyxAudio(text);
+  if (blob) await playBlob(blob);
+  else await speakBrowser(text);
+  onEnd?.();
+}
+
+/** Backwards-compatible alias. */
+export const speakHackerGirl = speakNyx;
+
+/** Speaks complete sentences as they stream in, as Nyx. Synthesis of the next
+ *  sentence overlaps playback of the current one to reduce gaps. */
 export class StreamingSpeech {
   private buffer = "";
-  private queue: string[] = [];
-  private speaking = false;
+  private queue: { text: string; audio: Promise<Blob | null> }[] = [];
+  private playing = false;
   private finished = false;
   private cancelled = false;
   private suppressingCode = false;
 
   constructor(private readonly onEnd?: () => void) {}
+
+  private enqueue(sentence: string) {
+    const text = sentence.trim();
+    if (!text) return;
+    // Start synthesis immediately so it overlaps playback of earlier sentences.
+    this.queue.push({ text, audio: fetchNyxAudio(text).catch(() => null) });
+    this.pump();
+  }
 
   push(text: string) {
     if (this.cancelled || this.finished) return;
@@ -189,46 +217,43 @@ export class StreamingSpeech {
       }
       this.buffer = this.buffer.slice(codeEnd + 3);
       this.suppressingCode = false;
-      this.queue.push("Code is displayed in the chat.");
+      this.enqueue("Code is shown in the chat.");
     }
     const codeStart = this.buffer.indexOf("```");
     if (codeStart >= 0) {
       const codeEnd = this.buffer.indexOf("```", codeStart + 3);
       if (codeEnd < 0) {
         const beforeCode = this.buffer.slice(0, codeStart).trim();
-        if (beforeCode) this.queue.push(beforeCode);
+        if (beforeCode) this.enqueue(beforeCode);
         this.buffer = "";
         this.suppressingCode = true;
-        this.pump();
         return;
       }
-      this.buffer = `${this.buffer.slice(0, codeStart)} Code is displayed in the chat. ${this.buffer.slice(codeEnd + 3)}`;
+      this.buffer = `${this.buffer.slice(0, codeStart)} Code is shown in the chat. ${this.buffer.slice(codeEnd + 3)}`;
     }
     const sentencePattern = /^([\s\S]*?[.!?](?:["')\]]*)\s+)/;
     let match: RegExpExecArray | null;
     while ((match = sentencePattern.exec(this.buffer))) {
-      this.queue.push(match[1].trim());
+      this.enqueue(match[1]);
       this.buffer = this.buffer.slice(match[0].length);
     }
-    // Avoid waiting indefinitely when a long answer has no punctuation.
     if (this.buffer.length > 280) {
       const splitAt = this.buffer.lastIndexOf(" ", 240);
       if (splitAt > 0) {
-        this.queue.push(this.buffer.slice(0, splitAt).trim());
+        this.enqueue(this.buffer.slice(0, splitAt));
         this.buffer = this.buffer.slice(splitAt + 1);
       }
     }
-    this.pump();
   }
 
   finish() {
     if (this.cancelled) return;
     this.finished = true;
     if (this.suppressingCode) {
-      this.queue.push("Code is displayed in the chat.");
+      this.enqueue("Code is shown in the chat.");
       this.suppressingCode = false;
     }
-    if (this.buffer.trim()) this.queue.push(this.buffer.trim());
+    if (this.buffer.trim()) this.enqueue(this.buffer);
     this.buffer = "";
     this.pump();
   }
@@ -237,38 +262,23 @@ export class StreamingSpeech {
     this.cancelled = true;
     this.queue = [];
     this.buffer = "";
+    stopSpeaking();
   }
 
-  private pump() {
-    if (this.cancelled || this.speaking) return;
+  private async pump() {
+    if (this.cancelled || this.playing) return;
     const next = this.queue.shift();
     if (!next) {
       if (this.finished) this.onEnd?.();
       return;
     }
-    if (typeof window === "undefined" || !("speechSynthesis" in window)) {
-      this.cancelled = true;
-      this.onEnd?.();
-      return;
-    }
-    this.speaking = true;
-    const utterance = new SpeechSynthesisUtterance(cleanTextForSpeech(next));
-    const voices = window.speechSynthesis.getVoices();
-    utterance.voice = voices.find((voice) => voice.lang.startsWith("en") && /zira|samantha|jenny|victoria|karen|female|google us english/i.test(voice.name))
-      || voices.find((voice) => voice.lang.startsWith("en"))
-      || voices[0]
-      || null;
-    utterance.pitch = 1.08;
-    utterance.rate = 0.98;
-    utterance.onend = () => {
-      this.speaking = false;
-      this.pump();
-    };
-    utterance.onerror = () => {
-      this.speaking = false;
-      this.pump();
-    };
-    window.speechSynthesis.speak(utterance);
+    this.playing = true;
+    const blob = await next.audio;
+    if (this.cancelled) return;
+    if (blob) await playBlob(blob);
+    else await speakBrowser(next.text);
+    this.playing = false;
+    this.pump();
   }
 }
 
@@ -281,7 +291,6 @@ export async function getProcessedMicrophone(): Promise<MediaStream> {
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
     });
   } catch (error) {
-    // Some devices reject optional audio constraints; retry with browser defaults.
     if (error instanceof DOMException && error.name === "OverconstrainedError") {
       return navigator.mediaDevices.getUserMedia({ audio: true });
     }
@@ -292,5 +301,13 @@ export async function getProcessedMicrophone(): Promise<MediaStream> {
 export function stopSpeaking() {
   if (typeof window !== "undefined" && "speechSynthesis" in window) {
     window.speechSynthesis.cancel();
+  }
+  if (currentAudio) {
+    try {
+      currentAudio.pause();
+    } catch {
+      /* ignore */
+    }
+    currentAudio = null;
   }
 }

@@ -1,11 +1,11 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { api, apiUrl, getToken } from "@/lib/api";
+import { api, apiBase, getToken } from "@/lib/api";
 import type { CollectionOut, ConversationOut, MessageOut } from "@/lib/types";
 import { Button, Input, ErrorNote, Spinner } from "@/components/ui";
 import { MarkdownMessage } from "./MarkdownMessage";
-import { speakHackerGirl, stopSpeaking, StreamingSpeech, getProcessedMicrophone } from "@/lib/voice";
+import { speakNyx, stopSpeaking, StreamingSpeech, getProcessedMicrophone } from "@/lib/voice";
 import { VoiceCallOverlay } from "./VoiceCallOverlay";
 
 interface ChatMsg {
@@ -82,8 +82,11 @@ export default function ChatPage() {
   const [voiceEnabled, setVoiceEnabled] = useState(false);
   const [isListening, setIsListening] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const [wakeEnabled, setWakeEnabled] = useState(false);
+  const [actionsEnabled, setActionsEnabled] = useState(false);
   const recognitionRef = useRef<unknown>(null);
   const recognitionHandledRef = useRef(false);
+  const wakeRecognitionRef = useRef<unknown>(null);
   const streamingSpeechRef = useRef<StreamingSpeech | null>(null);
   const [transcriptPreview, setTranscriptPreview] = useState("");
 
@@ -93,6 +96,8 @@ export default function ChatPage() {
   useEffect(() => {
     api<CollectionOut[]>("/collections").then(setCollections).catch(() => {});
     loadConversations();
+    // Admins with the action layer enabled can run scoped nmap / app launches.
+    api<{ enabled: boolean }>("/actions").then((r) => setActionsEnabled(!!r.enabled)).catch(() => setActionsEnabled(false));
 
     // Preload speech synthesis voices
     if (typeof window !== "undefined" && "speechSynthesis" in window) {
@@ -106,6 +111,10 @@ export default function ChatPage() {
       if (recognitionRef.current) {
         (recognitionRef.current as { abort?: () => void }).abort?.();
         recognitionRef.current = null;
+      }
+      if (wakeRecognitionRef.current) {
+        (wakeRecognitionRef.current as { abort?: () => void }).abort?.();
+        wakeRecognitionRef.current = null;
       }
       streamingSpeechRef.current?.cancel();
       stopSpeaking();
@@ -179,11 +188,115 @@ export default function ChatPage() {
     }
   }
 
+  // --- Wake word: say "Nyx" (or "Hey Nyx") to open the live call hands-free ---
+  useEffect(() => {
+    if (!wakeEnabled || isCallOpen || isListening) return;
+    if (typeof window === "undefined") return;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      setError("Wake word needs a browser speech-recognition service (Chrome or Edge).");
+      setWakeEnabled(false);
+      return;
+    }
+    let stopped = false;
+    const rec = new SpeechRecognition();
+    rec.lang = "en-US";
+    rec.continuous = true;
+    rec.interimResults = true;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    rec.onresult = (event: any) => {
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const t = (event.results[i][0]?.transcript || "").toLowerCase();
+        if (/\bnyx\b/.test(t) || /hey\s+nyx/.test(t)) {
+          stopped = true;
+          try { rec.stop(); } catch { /* ignore */ }
+          setIsCallOpen(true);
+          return;
+        }
+      }
+    };
+    rec.onend = () => {
+      if (!stopped && wakeEnabled && !isCallOpen && !isListening) {
+        try { rec.start(); } catch { /* ignore */ }
+      }
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    rec.onerror = (ev: any) => {
+      if (ev.error === "not-allowed" || ev.error === "service-not-allowed") {
+        setWakeEnabled(false);
+        setError("Microphone blocked for the wake word. Allow mic access to use it.");
+      }
+    };
+    try { rec.start(); } catch { /* ignore */ }
+    wakeRecognitionRef.current = rec;
+    return () => {
+      stopped = true;
+      try { rec.abort(); } catch { /* ignore */ }
+      wakeRecognitionRef.current = null;
+    };
+  }, [wakeEnabled, isCallOpen, isListening]);
+
+  // --- Command path: user's DIRECT utterance -> structured action (never the
+  // LLM, never document text). Parse -> confirm -> execute. ---
+  const COMMAND_RE = /^\s*(scan|nmap|open|launch|start)\b/i;
+
+  interface ParsedCommand {
+    action: "nmap" | "launch_app" | null;
+    nmap?: { target: string; profile: string; ports: string | null };
+    launch?: { name: string };
+    confirm?: string;
+  }
+
+  async function tryRunCommand(message: string): Promise<boolean> {
+    let parsed: ParsedCommand;
+    try {
+      parsed = await api<ParsedCommand>("/actions/parse", { method: "POST", body: { text: message } });
+    } catch {
+      return false; // parsing unavailable (not admin / disabled) -> normal chat
+    }
+    if (!parsed.action) return false;
+    if (!window.confirm(parsed.confirm || "Run this system action?")) {
+      setInput("");
+      return true; // user cancelled; do not send to the model
+    }
+    setInput("");
+    setMessages((m) => [...m, { role: "user", content: message }]);
+    setBusy(true);
+    try {
+      const body =
+        parsed.action === "nmap"
+          ? { action: "nmap", nmap: parsed.nmap }
+          : { action: "launch_app", launch: parsed.launch };
+      const res = await api<{ ok: boolean; action: string; detail: string; output: string }>(
+        "/actions/execute",
+        { method: "POST", body }
+      );
+      const rendered =
+        res.action === "nmap"
+          ? "```\n" + (res.output || res.detail) + "\n```"
+          : res.ok
+          ? `Launched \`${parsed.launch?.name}\`.`
+          : res.detail;
+      setMessages((m) => [...m, { role: "assistant", content: `**System action — ${res.detail}**\n\n${rendered}` }]);
+    } catch (err) {
+      setMessages((m) => [...m, { role: "assistant", content: `⚠️ Action refused: ${err instanceof Error ? err.message : "failed"}` }]);
+    } finally {
+      setBusy(false);
+    }
+    return true;
+  }
+
   // --- Real-time SSE Streaming Send ---
   async function send(e?: React.FormEvent, customMsg?: string) {
     if (e) e.preventDefault();
     const message = (customMsg !== undefined ? customMsg : input).trim();
     if (!message || busy) return;
+
+    if (actionsEnabled && COMMAND_RE.test(message)) {
+      const handled = await tryRunCommand(message);
+      if (handled) return;
+    }
 
     stopSpeaking();
     streamingSpeechRef.current?.cancel();
@@ -221,7 +334,7 @@ export default function ChatPage() {
       // Call streaming SSE endpoint
       let response: Response;
       try {
-        response = await fetch(`${apiUrl}/api/v1/conversations/${id}/stream`, {
+        response = await fetch(`${apiBase()}/api/v1/conversations/${id}/stream`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -231,7 +344,7 @@ export default function ChatPage() {
         });
       } catch (cause) {
         const detail = cause instanceof Error ? cause.message : "Network request failed";
-        throw new Error(`Can't reach the SecBrain backend at ${apiUrl}. Check that it is running and that NEXT_PUBLIC_API_URL is correct. (${detail})`);
+        throw new Error(`Can't reach the SecBrain backend at ${apiBase()}. Check that it is running and that NEXT_PUBLIC_API_URL is correct. (${detail})`);
       }
 
       if (!response.ok) {
@@ -347,13 +460,13 @@ export default function ChatPage() {
     try {
       let response: Response;
       try {
-        response = await fetch(`${apiUrl}/api/v1/conversations/${id}/stream`, {
+        response = await fetch(`${apiBase()}/api/v1/conversations/${id}/stream`, {
           method: "POST",
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${getToken()}` },
           body: JSON.stringify({ message, collection_ids: selected, top_k: 8, response_length: responseLength, thinking, web_search: webSearch }),
         });
       } catch {
-        throw new Error(`Can't reach SecBrain at ${apiUrl}. Check the backend and NEXT_PUBLIC_API_URL.`);
+        throw new Error(`Can't reach SecBrain at ${apiBase()}. Check the backend and NEXT_PUBLIC_API_URL.`);
       }
       content = await consumeVoiceStream(
         response,
@@ -478,7 +591,7 @@ export default function ChatPage() {
       setIsSpeaking(false);
     } else {
       setIsSpeaking(true);
-      speakHackerGirl(content, () => setIsSpeaking(false));
+      speakNyx(content, () => setIsSpeaking(false));
     }
   }
 
@@ -577,7 +690,7 @@ export default function ChatPage() {
             {/* Live Interactive Voice Call Button */}
             <button
               onClick={() => setIsCallOpen(true)}
-              title="Launch Live Hands-Free Cyber Call"
+              title="Start a hands-free live call with Nyx"
               className="flex shrink-0 items-center gap-1.5 rounded-full border border-accent/40 bg-accent/10 px-2.5 py-2 text-[11px] font-semibold text-accent transition hover:bg-accent/20 sm:gap-2 sm:px-3.5 sm:py-1 sm:text-xs"
             >
               <span className="relative flex h-2 w-2">
@@ -585,6 +698,20 @@ export default function ChatPage() {
                 <span className="relative inline-flex h-2 w-2 rounded-full bg-accent" />
               </span>
               <span className="sm:hidden">Call</span><span className="hidden sm:inline">📞 Live Call</span>
+            </button>
+
+            {/* Wake word toggle: say "Nyx" to open the call hands-free */}
+            <button
+              onClick={() => setWakeEnabled((v) => !v)}
+              title={'Hands-free wake word: say "Nyx" or "Hey Nyx" to start a call'}
+              className={`hidden sm:flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs transition-colors ${
+                wakeEnabled
+                  ? "border-accent bg-accent/15 text-accent font-medium shadow-[0_0_10px_rgba(34,211,238,0.25)]"
+                  : "border-border text-muted hover:text-fg"
+              }`}
+            >
+              <span className={`inline-block h-2 w-2 rounded-full ${wakeEnabled ? "bg-accent animate-pulse" : "bg-muted"}`} />
+              <span>👂 Wake: {wakeEnabled ? "ON" : "OFF"}</span>
             </button>
 
             {/* Cyber Voice Audio Toggle */}
@@ -598,7 +725,7 @@ export default function ChatPage() {
                   setIsSpeaking(false);
                 }
               }}
-              title="Toggle Cyberpunk Hacker Voice for text replies"
+              title="Toggle Nyx's spoken voice for text replies"
               className={`hidden sm:flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs transition-colors ${
                 voiceEnabled
                   ? "border-accent bg-accent/15 text-accent font-medium shadow-[0_0_10px_rgba(34,211,238,0.25)]"
@@ -681,7 +808,7 @@ export default function ChatPage() {
               <div>
                 <p className="text-sm font-medium text-fg">SecBrain Cyber Copilot</p>
                 <p className="mt-1 text-xs text-muted max-w-md">
-                  Click <strong>&quot;📞 Live Call&quot;</strong> above to talk with your AI hacker operator, or type technical questions and requests below.
+                  Click <strong>&quot;📞 Live Call&quot;</strong> above to talk with Nyx, your AI security partner, or type technical questions and requests below.
                 </p>
               </div>
             </div>

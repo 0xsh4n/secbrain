@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api import (
+    actions,
     apikeys,
     auth,
     chat,
@@ -18,6 +19,7 @@ from app.api import (
     health,
     knowledge,
     models,
+    voice,
 )
 from app.config import settings
 from app.services.tasks import purge_indexed_source_files
@@ -43,13 +45,23 @@ def discard_already_indexed_uploads() -> None:
     # longer needed once indexing has completed.
     purge_indexed_source_files()
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.cors_origin_list,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+if settings.cors_allow_all:
+    # Bearer-header auth (no cookies) => wildcard origin with credentials off.
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origin_regex=".*",
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+else:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_origin_list,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 
 @app.middleware("http")
@@ -81,6 +93,8 @@ for module in (
     models,
     apikeys,
     dashboard,
+    voice,
+    actions,
 ):
     app.include_router(module.router, prefix=API_V1)
 

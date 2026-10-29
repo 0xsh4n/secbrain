@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { api, apiUrl, getToken } from "@/lib/api";
+import { api, apiBase, getToken } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import type { ModelStatus } from "@/lib/types";
 import { Button, Card, CardHeader, ErrorNote, Spinner } from "@/components/ui";
@@ -23,7 +23,7 @@ export default function SettingsPage() {
     setBackupError("");
     setBackupMessage("");
     try {
-      const response = await fetch(`${apiUrl}/api/v1/documents/backup/export`, {
+      const response = await fetch(`${apiBase()}/api/v1/documents/backup/export`, {
         headers: { Authorization: `Bearer ${getToken()}` },
       });
       if (!response.ok) {
@@ -59,7 +59,7 @@ export default function SettingsPage() {
     try {
       const form = new FormData();
       form.append("file", file);
-      const response = await fetch(`${apiUrl}/api/v1/documents/backup/import`, {
+      const response = await fetch(`${apiBase()}/api/v1/documents/backup/import`, {
         method: "POST",
         headers: { Authorization: `Bearer ${getToken()}` },
         body: form,
@@ -227,7 +227,7 @@ export default function SettingsPage() {
           <Spinner />
         ) : (
           <div className="space-y-2 pt-3 text-sm">
-            <Row k="API base URL" v={apiUrl} />
+            <Row k="API base URL" v={apiBase()} />
             <Row k="Inference provider" v={status?.generation.provider || "—"} />
             <Row
               k="Outbound LLM calls"

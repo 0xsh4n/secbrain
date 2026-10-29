@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     debug: bool = True
     # Comma-separated list of allowed CORS origins (frontend).
     cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
+    # Allow any origin (useful for self-hosted LAN/remote access where the
+    # frontend is opened from varying hosts). Safe because auth uses a Bearer
+    # header, not cookies, so credentials are disabled when this is on.
+    cors_allow_all: bool = False
 
     # --- Security ---
     # MUST be overridden in production. Used to sign JWT session tokens.
@@ -99,6 +103,26 @@ class Settings(BaseSettings):
 
     # --- Rate limiting (per API key, requests/minute) ---
     api_rate_limit_per_minute: int = 60
+
+    # --- Text-to-speech (Nyx voice) ---
+    # none | piper   (piper = local neural TTS, CPU, offline)
+    tts_provider: str = "piper"
+    tts_voice_name: str = "Nyx"
+    piper_voice_path: str = "./data/voices/en_US-amy-medium.onnx"
+    tts_length_scale: float = 1.0   # >1 slower, <1 faster
+    tts_max_chars: int = 4000
+
+    # --- System actions (nmap / app launch) ---
+    # OFF by default: the action layer fails closed. Enable explicitly.
+    actions_enabled: bool = False
+    nmap_binary: str = "nmap"
+    nmap_timeout_seconds: float = 180.0
+    # JSON object mapping a friendly app name -> argv list, e.g.
+    # {"firefox": ["firefox"], "burp": ["BurpSuiteCommunity"]}
+    allowed_apps: str = "{}"
+    # JSON array of CIDR/host globs always allowed as scan targets even without
+    # an engagement (use for lab/loopback only, e.g. ["127.0.0.1/32"]).
+    action_scope_allowlist: str = "[]"
 
     # --- Bootstrap admin (created on first `init-db` if absent) ---
     bootstrap_admin_email: str = "admin@secbrain.local"
