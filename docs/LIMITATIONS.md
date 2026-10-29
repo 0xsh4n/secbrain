@@ -63,13 +63,26 @@ The following are known limitations, documented honestly.
 - Uploaded documents are treated as untrusted data; see
   [THREAT_MODEL.md](THREAT_MODEL.md).
 
-## Future agents (not in this release)
+## Voice (Nyx TTS)
 
-- No active security testing, exploitation, scanning, persistence, or credential
-  handling is implemented. The `engagements` model and policy-layer design are
-  foundations only, and are specified to **fail closed**. Any future active
-  capability must go through the policy layer with explicit, scoped, time-bounded
-  authorization — never inferred from a knowledge document.
+- Natural voice uses local **Piper** TTS. The voice model (~63 MB) must be
+  downloaded (`python -m app.cli download-voice`); until then the UI falls back
+  to browser speech synthesis. Speech recognition (dictation, wake word) relies
+  on the browser's service (Chrome/Edge, usually online) and is not provided by
+  SecBrain. Streaming TTS synthesizes per sentence, so there can be brief gaps on
+  slower CPUs.
+
+## System actions (nmap / app launch)
+
+- **Disabled by default and fail-closed.** When enabled, only a fixed set of
+  actions is available (nmap profiles, allowlisted app launch), scoped to
+  authorized targets, admin-session only, never LLM/document-triggered, audited.
+- App launch runs on the backend host — in a container it launches inside the
+  container (no host GUI); it is most useful in the native deployment.
+- The scope check reuses the `engagements` model plus a config allowlist. No
+  other active testing, exploitation, persistence, or credential handling is
+  implemented; any future capability must go through the same fail-closed policy
+  layer — authorization is never inferred from a knowledge document.
 
 ## Dependencies
 

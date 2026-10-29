@@ -56,6 +56,11 @@ Revoke with `DELETE /api/v1/apikeys/{id}`, rotate with
 | POST | `/knowledge/answer` | any | Grounded answer |
 | POST/GET | `/conversations` … | session | Chat |
 | GET | `/dashboard/stats`, `/dashboard/jobs` | session | Dashboard data |
+| GET | `/voice/status` | any | Nyx TTS status (provider, availability) |
+| POST | `/voice/tts` | any | Synthesize speech (WAV) for given text |
+| GET | `/actions` | admin session | List available system actions (if enabled) |
+| POST | `/actions/parse` | admin session | Parse an utterance into a structured command (no execution) |
+| POST | `/actions/execute` | admin session | Execute a scoped action (nmap / app launch) |
 
 ## Search
 
@@ -172,6 +177,59 @@ curl -s -X DELETE localhost:8000/api/v1/conversations/{conv_id} \
 `collection_id`, `q`, `sort`. Responses include `total`, `limit`, `offset`.
 `top_k` is bounded to 50. Errors use standard HTTP status codes with a
 `{"detail": "..."}` body.
+
+## Voice (Nyx TTS)
+
+```bash
+# Status (provider, whether the Piper voice model is available)
+curl -s localhost:8000/api/v1/voice/status -H "authorization: Bearer $TOKEN"
+# -> {"provider":"piper","available":true,"voice_name":"Nyx","model_path":"..."}
+
+# Synthesize speech -> WAV audio (or 503 if the voice model isn't installed)
+curl -s -X POST localhost:8000/api/v1/voice/tts \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"text":"Hello, I am Nyx."}' --output nyx.wav
+```
+
+A `503` means TTS is unavailable (e.g. voice model not downloaded); clients
+should fall back to local/browser speech. Speech-to-text is handled client-side
+by the browser, not by the API.
+
+## System Actions (nmap / app launch)
+
+Disabled unless `SECBRAIN_ACTIONS_ENABLED=true`. **Admin session only** (API
+keys are rejected). Targets must be within an authorized scope (an active
+Engagement or `SECBRAIN_ACTION_SCOPE_ALLOWLIST`); out-of-scope requests return
+`403`. The executor uses argv lists (no shell) and fixed nmap profiles.
+
+```bash
+# What's available
+curl -s localhost:8000/api/v1/actions -H "authorization: Bearer $TOKEN"
+# -> {"enabled":true,"nmap_profiles":["ping","quick","service","top100"],
+#     "allowed_apps":["firefox"],"scope_allowlist":["127.0.0.1/32"]}
+
+# Parse a natural command into a structured action (NO execution)
+curl -s -X POST localhost:8000/api/v1/actions/parse \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"text":"scan quick 127.0.0.1"}'
+# -> {"action":"nmap","nmap":{"target":"127.0.0.1","profile":"quick","ports":null},
+#     "confirm":"Run nmap 'quick' scan on 127.0.0.1?"}
+
+# Execute (after user confirmation)
+curl -s -X POST localhost:8000/api/v1/actions/execute \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"action":"nmap","nmap":{"target":"127.0.0.1","profile":"quick"}}'
+# -> {"ok":true,"action":"nmap","detail":"profile=quick target=127.0.0.1 rc=0","output":"..."}
+
+# Launch an allowlisted app
+curl -s -X POST localhost:8000/api/v1/actions/execute \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"action":"launch_app","launch":{"name":"firefox"}}'
+```
+
+> The action layer is **never** invoked by the grounded-answer LLM or by content
+> inside ingested documents — only by an authenticated admin's direct, structured
+> request. See [THREAT_MODEL.md](THREAT_MODEL.md).
 
 ## MCP integration
 

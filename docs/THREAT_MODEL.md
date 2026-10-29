@@ -78,12 +78,33 @@ active-testing agents are explicitly out of scope and not implemented.
   caught by a global handler that returns a generic 500 (no tracebacks/secrets
   to clients). Security headers are set on every response.
 
-### 9. Insecure future agent tools (design-time)
-- The `engagements` model and the documented policy-layer design require future
-  active testing to **fail closed** (authorization defaults to pending, must be
-  explicit, scoped, and time-bounded). Authorization is never inferred from a
-  domain appearing in a knowledge document. No active testing, exploitation,
-  scanning, or persistence is implemented in this release.
+### 9. System actions (nmap / app launch)
+- The action layer is **disabled by default** and **fails closed**. When enabled
+  (`SECBRAIN_ACTIONS_ENABLED=true`) it exposes only a fixed, non-free-form set of
+  actions: nmap with named profiles, and launching apps from a name→argv
+  allowlist.
+- **Not LLM-reachable**: execution is driven exclusively by an authenticated
+  admin's direct, *structured* request (`POST /actions/execute`). The
+  grounded-answer model is given no tools and never calls it, and the command
+  parser runs on the user's own utterance — so text inside an ingested document
+  can never trigger an action (no prompt-injection → command execution).
+- **Scope-gated**: nmap targets must fall within an active, non-expired
+  Engagement for the org or an explicit config allowlist; excluded assets and
+  anything else are refused. Authorization is never inferred from a domain
+  appearing in a knowledge document.
+- **No shell**: commands run via argv lists (`shell=False`); nmap flags come from
+  fixed profiles; ports are regex-validated; app launches are allowlist-only.
+- **Admin session only** (API keys rejected), with every action and refusal
+  audit-logged.
+- Covered by `test_actions.py` / `test_actions_api.py` (disabled-by-default,
+  scope enforcement, exclusions, argument validation, no-shell argv, app
+  allowlist, API-key rejection).
+
+### 10. Future agent tools (design-time)
+- Beyond the scoped actions above, no automated exploitation, destructive
+  testing, persistence, credential theft, or unrestricted scanning is
+  implemented. Any future active capability must go through the same policy layer
+  (Engagement scope, fail-closed, explicit/time-bounded authorization).
 
 ## Assumptions
 

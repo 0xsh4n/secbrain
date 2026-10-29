@@ -10,8 +10,10 @@ SecBrain collects, processes, organizes, indexes, and retrieves security knowled
 
 ## Highlights
 
-- **SecBrain Copilot** — A friendly, professional cybersecurity engineering assistant that answers technical questions, generates production-ready code (Python, Bash, YARA, configs), and suggests remediations.
-- **Voice Chat ("Operator Nyx")** — Browser speech recognition with live transcript feedback, spoken responses, an audio visualizer, and a text fallback.
+- **Nyx, the SecBrain Copilot** — A friendly, professional cybersecurity engineering assistant that answers technical questions, generates production-ready code (Python, Bash, YARA, configs), and suggests remediations.
+- **Natural Voice (Nyx) + Hands-Free Wake Word** — Spoken replies use a local **Piper neural voice** (warm and human-like, runs on CPU, offline) with automatic fallback to browser speech. A full live-call mode, in-composer dictation, and an optional **wake word** ("Nyx" / "Hey Nyx") that opens the call hands-free.
+- **Scope-Gated System Actions** — Opt-in, fail-closed action layer that can run `nmap` against **authorized targets only** (engagement scope / allowlist) and launch **allowlisted applications** — driven by your direct command, never by the LLM or ingested content, and fully audited.
+- **Works from any device on your network** — The browser resolves the API at runtime, so opening the app from a phone or another machine just works (no rebuild).
 - **Real-Time Streaming & Code Blocks** — Word-by-word token streaming via Server-Sent Events (SSE) with formatted syntax cards and 1-click **"Copy code"** buttons.
 - **Persistent Multi-Turn Chat** — Database-backed conversation threads with history switching and context from earlier messages in the active conversation.
 - **Responsive Workspace** — Desktop navigation rail, compact mobile navigation, touch-friendly controls, and layouts that adapt across the dashboard, library, search, ingest, and chat screens.
@@ -78,11 +80,38 @@ uvicorn app.main:app --reload --port 8000
 ```bash
 cd frontend
 npm install
-cp .env.local.example .env.local               # points at http://localhost:8000
+cp .env.local.example .env.local               # optional; defaults auto-derive the API from the browser host
 npm run dev                                    # http://localhost:3000
 ```
 
 Default bootstrap admin: `admin@secbrain.local` / `changeme-admin-123` (**change in production**).
+
+> For remote dev access, bind the backend to all interfaces:
+> `uvicorn app.main:app --host 0.0.0.0 --port 8000`, and start the frontend with
+> `npm run dev -- -H 0.0.0.0`.
+
+---
+
+## Accessing SecBrain from Other Devices (Remote / Network Access)
+
+The frontend resolves the API base URL **at runtime in the browser**, so the app
+works from a phone or another machine with no rebuild. `localhost` is never baked
+into the client bundle. Pick whichever fits your setup:
+
+| Scenario | Frontend (`.env.local` / build args) | Backend |
+|----------|--------------------------------------|---------|
+| **LAN / self-hosted (default)** | Leave `NEXT_PUBLIC_API_URL` unset. Optionally set `NEXT_PUBLIC_API_PORT` (default `8000`). Opening `http://<server-ip>:3000` makes the API target `http://<server-ip>:8000` automatically. | Reachable on that host:port, and `SECBRAIN_CORS_ALLOW_ALL=true` (default in docker-compose) **or** list the exact origin in `SECBRAIN_CORS_ORIGINS`. Bind `--host 0.0.0.0`. |
+| **Fixed public URL** | `NEXT_PUBLIC_API_URL=https://api.your-domain.example` | Allow that frontend origin via `SECBRAIN_CORS_ORIGINS`. |
+| **Single URL / tunnel (reverse proxy)** | `NEXT_PUBLIC_API_URL=same-origin` (browser uses relative `/api` paths) | Put a proxy in front that routes `/api/*` to the backend. No CORS needed — ideal for Cloudflare Tunnel / ngrok / a single forwarded port. |
+
+CORS note: because authentication uses a **Bearer token header (not cookies)**,
+`SECBRAIN_CORS_ALLOW_ALL=true` runs with credentials disabled and is safe for a
+self-hosted single-tenant deployment. Lock it down by setting it to `false` and
+listing exact origins in `SECBRAIN_CORS_ORIGINS`.
+
+With Docker, `docker compose up` already binds `0.0.0.0`, enables
+`SECBRAIN_CORS_ALLOW_ALL`, and builds the frontend to auto-derive the API — just
+open `http://<server-ip>:3000` from any device on the network.
 
 ---
 
@@ -91,8 +120,9 @@ Default bootstrap admin: `admin@secbrain.local` / `changeme-admin-123` (**change
 1. **Ingest** — Ingestion Queue page: paste text, submit public URLs, or upload PDF/MD/HTML/DOCX files. Tracks progress through `PENDING → FETCHING → EXTRACTING → INDEXING → COMPLETED`. After successful indexing, uploaded source files are discarded; extracted text and indexed chunks stay in the knowledge pool.
 2. **Search** — Search page: hybrid retrieval returning authorized evidence passages with source metadata, score, and retrieval method tags.
 3. **Knowledge Chat & Copilot** — Chat page: multi-turn conversation threads, real-time streaming, rich syntax code blocks with 1-click copy, and persistent topic history.
-4. **Voice Chat** — Use the microphone for speech-to-text or open **`Call`** for a continuous listen/respond voice session. Browser speech recognition support and network access are required; typed input remains available as a fallback.
-5. **API Keys & MCP** — Create scoped, rate-limited API keys for external applications or connect agents via the stdio MCP server.
+4. **Voice Chat (Nyx)** — Click the 🎙️ mic to dictate, or open **`📞 Live Call`** for a continuous listen/respond session. Nyx speaks with a local Piper neural voice (falls back to browser speech if the voice model isn't installed). Toggle **👂 Wake** and say "Nyx" to start a call hands-free. Speech-to-text uses the browser's recognition service (Chrome/Edge); typed input is always available.
+5. **System Actions (optional, admins)** — When enabled, type or say a command like `scan quick 127.0.0.1` or `open firefox`; SecBrain parses it, asks you to confirm, runs it only if the target is in authorized scope, and shows the result. Disabled by default — see [System actions](#system-actions-nmap--app-launch).
+6. **API Keys & MCP** — Create scoped, rate-limited API keys for external applications or connect agents via the stdio MCP server.
 
 ### Example API Usage
 
@@ -151,6 +181,71 @@ SECBRAIN_RETRIEVAL_TOP_K=4
 ```
 
 See [docs/LOCAL_MODELS.md](docs/LOCAL_MODELS.md) for hardware tiers, VRAM sizing, and performance benchmarks.
+
+---
+
+## Nyx's Voice (Local Neural TTS)
+
+Nyx speaks with **Piper**, a local neural text-to-speech engine that runs on CPU,
+offline, with no GPU. The voice model is downloaded once:
+
+```bash
+cd backend && source .venv/bin/activate
+python -m app.cli download-voice          # downloads en_US-amy-medium (~63 MB)
+```
+
+Relevant settings (see `backend/.env.example`):
+
+```ini
+SECBRAIN_TTS_PROVIDER=piper               # or "none" to disable
+SECBRAIN_TTS_VOICE_NAME=Nyx
+SECBRAIN_PIPER_VOICE_PATH=./data/voices/en_US-amy-medium.onnx
+SECBRAIN_TTS_LENGTH_SCALE=1.0             # >1 slower, <1 faster
+```
+
+In Docker the model is fetched automatically on first start. If the voice model
+is missing, the TTS endpoint returns `503` and the UI **falls back to the
+browser's built-in speech synthesis**, so voice still works everywhere. Speech
+recognition (dictation, wake word, live-call listening) uses the browser's own
+service and works best in Chrome/Edge.
+
+---
+
+## System Actions (nmap / app launch)
+
+An opt-in, **fail-closed** action layer lets Nyx run a small set of system
+actions on your direct command. It is **disabled by default**.
+
+Enable and scope it in the backend environment:
+
+```ini
+SECBRAIN_ACTIONS_ENABLED=true
+# Authorized scan targets (lab/loopback). Prefer defining scope via an Engagement.
+SECBRAIN_ACTION_SCOPE_ALLOWLIST=["127.0.0.1/32","192.168.56.0/24"]
+# Only these apps can be launched (friendly name -> argv):
+SECBRAIN_ALLOWED_APPS={"firefox":["firefox"],"burp":["BurpSuiteCommunity"]}
+```
+
+Then, in chat (as an admin), type or say:
+
+- `scan quick 127.0.0.1` — nmap quick scan (profiles: `quick`, `service`, `top100`, `ping`)
+- `open firefox` — launch an allowlisted application
+
+SecBrain parses the command, **asks you to confirm**, and executes only if the
+target is within an authorized scope. Safeguards:
+
+- Off unless explicitly enabled; refuses anything outside scope (targets, apps).
+- Admin **session** only — not reachable with an API key.
+- No shell is used (argv lists); nmap flags come from fixed profiles, not free-form input.
+- The executor is driven by your direct, structured command — **never by the LLM
+  or by text inside an ingested document** (no prompt-injection → command execution).
+- Every action (and refusal) is audit-logged.
+
+> ⚠️ Only scan systems you are authorized to test. App launch runs on the host
+> where the backend runs, so it is most useful in the **native** deployment on
+> your workstation (inside a container it launches within the container).
+
+See [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) for the full security rationale.
 
 ---
 

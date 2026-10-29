@@ -14,9 +14,26 @@ Another service may hold the port. Run the backend on another port
 reads env at runtime).
 
 **Frontend can't reach the API / CORS errors.**  
-`NEXT_PUBLIC_API_URL` is inlined at **build time**. After changing it, rebuild
-(`docker compose up --build` or `npm run build`). Ensure the backend's
-`SECBRAIN_CORS_ORIGINS` includes the frontend origin (e.g. `http://localhost:3000`).
+The API base is resolved **at runtime** in the browser (no rebuild needed). If
+you see "Cannot reach SecBrain API at http://localhost:8000", either you're
+running a stale build or the backend isn't reachable from your device. Ensure the
+backend's `SECBRAIN_CORS_ORIGINS` includes the frontend origin, or set
+`SECBRAIN_CORS_ALLOW_ALL=true`.
+
+**Opening the app from another device / phone shows "Cannot reach SecBrain API".**  
+By default the browser derives the API from the page's host — open
+`http://<server-ip>:3000` and it targets `http://<server-ip>:8000`. Checklist:
+* Backend bound to all interfaces: `uvicorn app.main:app --host 0.0.0.0 --port 8000` (Docker already does this).
+* Backend CORS allows the origin: `SECBRAIN_CORS_ALLOW_ALL=true` (default in docker-compose) or add the exact origin to `SECBRAIN_CORS_ORIGINS`.
+* Both ports (3000 and 8000) reachable from the device, or use a custom port via `NEXT_PUBLIC_API_PORT`.
+* Only one port exposed (e.g. a tunnel)? Use a reverse proxy and set `NEXT_PUBLIC_API_URL=same-origin` so the browser uses relative `/api` paths. A minimal Caddyfile:
+  ```
+  your-host:80 {
+      reverse_proxy /api/* backend:8000
+      reverse_proxy /* frontend:3000
+  }
+  ```
+* Seeing `localhost:8000` in the error from a remote device means a **stale** `next dev`/build is being served — restart it (and free the old port).
 
 **Mobile navigation covers the page or looks cramped.**
 The mobile workspace uses a fixed bottom navigation bar and reserves space for
@@ -128,15 +145,50 @@ With defaults (`VECTOR_STORE=memory`, `*_PROVIDER=fake`) neither is required.
 Don't run Postgres + Qdrant + Ollama + both app servers at once on an 8 GB box.
 Run Ollama on the host and SecBrain in Docker, or use lightweight models (`qwen2.5:3b`, `qwen2.5:1.5b`).
 
-## Voice input
+## Voice (Nyx) & wake word
 
-**Voice input shows a network or service error.**
-The microphone stream and live audio visualizer use browser microphone access;
-speech-to-text also depends on the browser's speech-recognition implementation
-and may need an internet connection. Allow microphone access for the app, try a
-supported current browser such as Chrome or Edge, and use the call overlay's
-text field if recognition is unavailable. The typed chat input does not depend
-on browser speech recognition.
+**Nyx sounds robotic / like the old browser voice.**
+Nyx's natural voice uses the local **Piper** neural TTS. If the voice model
+isn't installed, the TTS endpoint returns `503` and the UI falls back to the
+browser's built-in speech synthesis. Install the model:
+`cd backend && python -m app.cli download-voice`, then check
+`GET /api/v1/voice/status` shows `"available": true`. In Docker it's fetched on
+first start (`SECBRAIN_DOWNLOAD_VOICE_ON_START=true`).
+
+**No sound at all when Nyx replies.**
+Browsers block audio until the user interacts with the page. Click once (e.g.
+start the call or toggle Voice) so playback is permitted. Also confirm the
+backend `voice/tts` returns `200 audio/wav` and the Voice toggle is ON.
+
+**Voice input / wake word shows a network or service error.**
+Speech-to-text (dictation, wake word, and live-call listening) uses the
+**browser's** speech-recognition service, which needs Chrome/Edge and usually an
+internet connection — it is independent of SecBrain's own model settings. Allow
+microphone access, and use the typed input or the call overlay's text field if
+recognition is unavailable.
+
+**Wake word doesn't trigger.**
+Enable **👂 Wake** in the chat header and allow mic access. Say "Nyx" or "Hey
+Nyx". The wake listener pauses while a call is open or while you're dictating
+(one recognizer uses the mic at a time), and needs a Chromium-based browser.
+
+## System actions (nmap / app launch)
+
+**"System actions are disabled" / 409 on execute.**
+Set `SECBRAIN_ACTIONS_ENABLED=true` and restart the backend.
+
+**nmap command refused with "not within any authorized scope".**
+By design — add the target to an authorized Engagement, or to
+`SECBRAIN_ACTION_SCOPE_ALLOWLIST` (e.g. `["127.0.0.1/32"]`). Excluded assets are
+always refused. This fails closed on purpose.
+
+**403 when calling actions with an API key.**
+Actions require an interactive **admin session**; API keys are rejected on
+purpose. Use the web UI (logged in as an admin) or a session bearer token.
+
+**"nmap is not installed on the server."**
+Install nmap on the host where the backend runs, or set `SECBRAIN_NMAP_BINARY`
+to its path.
 
 ## Knowledge backup and Google Drive sync
 
